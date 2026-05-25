@@ -1,83 +1,146 @@
 # Current Status — RI-0 HSK
 
-## Status label
+## Status Label
 
 **Pilot-ready / production-hardening in progress.**
 
-The repository contains real architecture, service code, schemas, Kubernetes manifests, SDK material, and a deterministic cryptographic demo. It should not yet be described as fully production-ready until the Rust services, database-backed flow, CI, and deployment path are fully verified in a complete toolchain.
+RI-0 HSK now has a real local MVP API service for the core Human Sovereignty Kernel flow. The repository has been cleaned into a single baseline commit, tested locally, and verified through GitHub Actions CI.
 
-## What works now
+This repository should not yet be described as fully production-ready infrastructure. It is a working MVP baseline that is ready for technical review and further production hardening.
 
-- `make demo` runs a service-backed identity → consent grant → Ed25519 proof generation → proof verification → consent revocation → audit trail flow.
-- The local service is implemented in `services/hsk_api/` using FastAPI and SQLite for persistence.
-- Ed25519 signing is implemented through the Python `cryptography` package.
-- Docker Compose support is available through `docker-compose.yml` for local service deployment.
-- GitHub Actions CI validates `make setup`, `make test`, and `make demo`, with a Docker Compose smoke test in CI.
-- Demo audit output is written to `reports/demo_audit.json`.
-- Python unit tests pass in this environment.
-- YAML smoke validation is available.
-- PostgreSQL consent schema was hardened for known migration blockers.
-- GitHub Actions was reduced to a valid smoke CI workflow.
+## Current Verified State
 
-## What was fixed in this hardening pass
+- Main branch has a clean baseline commit.
+- GitHub Actions CI is passing.
+- `make test` passes.
+- `make demo` passes.
+- `make demo` uses the real FastAPI service-backed flow.
+- Dockerfile and Docker Compose support exist.
+- Runtime/generated reports are ignored and not committed.
 
-- Added deterministic `scripts/demo_flow.py` using real Ed25519 signatures through `cryptography`.
-- Added `make setup`, `make test`, `make demo`, `make docker-up`, and `make docker-down` targets.
-- Fixed PostgreSQL partial index using volatile `NOW()` in `database-schemas/consent_ledger.sql`.
-- Adjusted consent revoke compatibility by allowing zero-duration revoke entries and same timestamp revoke windows.
-- Added strict Istio mTLS `PeerAuthentication` so the existing unit test requirement is satisfied.
-- Replaced large/fragile CI workflows with a focused smoke CI and archived legacy workflows under `docs/archive/workflows/`.
-- Added `.env.example`, `.gitignore`, `docs/API.md`, `CURRENT_STATUS.md`, `DEVELOPMENT_NOTES.md`, and `FILE_INVENTORY.md`.
-- Reduced external claims from production-ready to pilot-ready / production-hardening where appropriate.
-- Pinned Ed25519 dependency intent toward the v1 API currently used by the Rust code. A full v2 migration remains recommended.
+## What Works Now
 
-## Test evidence from this environment
+- FastAPI MVP service under `services/hsk_api/`
+- SQLite local MVP persistence
+- Ed25519 signing through the Python `cryptography` package
+- Identity creation
+- Consent grant
+- Cryptographic proof generation
+- Proof verification
+- Tampered proof failure handling
+- Consent revocation
+- Audit trail generation
+- API-backed demo flow
+- Local test suite
+- YAML validation
+- Docker Compose local service support
+- GitHub Actions CI validation
 
-```text
-python3 -m pytest tests/unit -q
-49 passed
-
-make demo
-status: passed
-identity created
-grant proof verified
-revocation proof verified
-audit written to reports/demo_audit.json
-```
-
-## Not run / blockers
-
-- Rust build was not executed here because this sandbox does not have `cargo` or `rustc` installed.
-- Docker Compose was not started here because a Docker daemon is not available in this execution environment.
-- PostgreSQL migrations were statically patched but not applied against a live database in this environment.
-- Mobile SDK builds were not executed here because Android, iOS, Flutter, and React Native toolchains are not installed.
-
-## How to verify locally
+## Verified Commands
 
 ```bash
 make setup
 make test
 make demo
-cat reports/demo_audit.json
 ```
 
-For Rust service verification on a local machine with Rust installed:
+Latest verified local result:
 
-```bash
-make rust-check
+```text
+YAML validation: 73 passed
+Pytest: 56 passed, 24 skipped
+Demo: passed
+Output: reports/demo_audit.json
 ```
 
-For Docker verification:
+## Main API Service
+
+The local MVP API is implemented in:
+
+```text
+services/hsk_api/
+```
+
+Main endpoints include:
+
+```text
+GET  /v1/health
+POST /v1/identities
+POST /v1/consents
+POST /v1/proofs
+POST /v1/proofs/verify
+POST /v1/consents/{entry_id}/revoke
+GET  /v1/audit
+GET  /v1/audit/{did}
+```
+
+See:
+
+```text
+docs/API.md
+```
+
+## Docker Support
+
+The repository includes:
+
+```text
+Dockerfile
+docker-compose.yml
+requirements.txt
+```
+
+Useful commands:
 
 ```bash
 make docker-up
+make docker-logs
 make docker-down
 ```
 
-## Remaining risks
+## CI Status
 
-- Rust code still needs a full compile/test pass in a Rust toolchain.
-- Rust Ed25519 API should be migrated cleanly to `ed25519-dalek` v2 instead of relying on v1-compatible code.
-- The service API paths need final implementation alignment with `docs/API.md`.
-- Demo audit is file-based; production audit must be append-only, persistent, tamper-evident, and backed by database/transparency-log storage.
-- Several advanced service folders are architecture/prototype modules, not proven production services.
+GitHub Actions validates the repository on push and pull request by running setup, tests, demo, and Docker/API smoke checks where available.
+
+## Important Limits
+
+The current implementation is still MVP-level.
+
+Known limits:
+
+- SQLite is used for local persistence only.
+- Local file-based system key storage is MVP-only and not production key management.
+- API authentication is not yet fully hardened.
+- Production audit storage must become append-only, persistent, tamper-evident, and backed by stronger infrastructure.
+- Rust services still require a full compile/test pass in a Rust toolchain.
+- Mobile SDKs still require proper build verification.
+- Production deployment security still needs a full review.
+
+## Remaining Engineering Priorities
+
+1. Add API key authentication using `HSK_API_KEY`.
+2. Protect write and audit endpoints.
+3. Add production-grade key management design.
+4. Add PostgreSQL-backed service mode.
+5. Add stronger integration tests.
+6. Add persistent append-only audit storage.
+7. Complete Rust service compile/test verification.
+8. Validate mobile SDK builds.
+9. Rename repository from `ROI-HSK-` to `ROI-HSK`.
+10. Prepare a technical review brief for partners/investors.
+
+## Accurate External Positioning
+
+Use this wording externally:
+
+```text
+RI-0 HSK is a pilot-ready AI governance and cryptographic consent MVP with a working FastAPI service, Ed25519 proof flow, SQLite local persistence, Docker support, passing tests, and green CI. It is currently in production hardening.
+```
+
+Do not claim:
+
+```text
+Fully production-ready government-grade infrastructure
+```
+
+until production database, key management, authentication, audit durability, deployment, and security review are complete.
