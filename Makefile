@@ -48,7 +48,9 @@ docker-logs:
 	$(DOCKER_COMPOSE) logs -f hsk-api
 
 inventory:
-	find . -type f | sed 's#^./##' | sort > FILE_INVENTORY.md
+	find . \
+		\( -path './.git' -o -path './.pytest_cache' -o -path './reports' -o -path './services/hsk_api/data' -o -path './node_modules' -o -path './target' -o -path './.venv' -o -path './venv' -o -path '*/__pycache__' \) -prune \
+		-o -type f ! -name '*.pyc' -print | sed 's#^./##' | sort > FILE_INVENTORY.md
 	@echo "Wrote FILE_INVENTORY.md"
 
 clean:
