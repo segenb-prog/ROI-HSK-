@@ -1,0 +1,46 @@
+{
+  "name": "@hskernel/client",
+  "version": "0.1.0",
+  "description": "HSK Falsification Machine TypeScript/JavaScript Client",
+  "main": "dist/hsk-client.js",
+  "types": "dist/hsk-client.d.ts",
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "lint": "eslint . --ext .ts",
+    "format": "prettier --write \"**/*.ts\"",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "hsk",
+    "verification",
+    "cryptography",
+    "ai-governance",
+    "transparency"
+  ],
+  "author": "HSKernel Team <team@hskernel.dev>",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hskernel/hs-verifier.git",
+    "directory": "examples/typescript-client"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.24",
+    "@typescript-eslint/eslint-plugin": "^7.1.0",
+    "@typescript-eslint/parser": "^7.1.0",
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.2.5",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

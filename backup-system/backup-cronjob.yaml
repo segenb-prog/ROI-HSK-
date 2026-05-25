@@ -1,0 +1,300 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: database-backup-hourly
+  namespace: hsk-verifier
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: database-backup
+        spec:
+          serviceAccountName: backup-sa
+          containers:
+          - name: backup
+            image: postgres:15-alpine
+            env:
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: database-credentials
+                  key: host
+            - name: PGDATABASE
+              value: "consent_ledger"
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: database-credentials
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: database-credentials
+                  key: password
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: secret-access-key
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: BACKUP_BUCKET
+              value: "hsk-backups-primary"
+            - name: BACKUP_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-encryption
+                  key: key
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+              BACKUP_FILE="consent_ledger_hourly_${TIMESTAMP}.sql.gz.enc"
+              
+              echo "Starting hourly backup at $(date)"
+              
+              # Create backup with encryption
+              pg_dump -Fc --verbose --blobs consent_ledger | \
+                gzip | \
+                openssl enc -aes-256-cbc -salt -pass pass:"$BACKUP_ENCRYPTION_KEY" | \
+                aws s3 cp - "s3://${BACKUP_BUCKET}/hourly/${BACKUP_FILE}"
+              
+              # Verify backup integrity
+              echo "Verifying backup..."
+              aws s3 cp "s3://${BACKUP_BUCKET}/hourly/${BACKUP_FILE}" - | \
+                openssl enc -aes-256-cbc -d -pass pass:"$BACKUP_ENCRYPTION_KEY" | \
+                gunzip | head -c 100 > /dev/null
+              
+              # Create checksum
+              aws s3 cp "s3://${BACKUP_BUCKET}/hourly/${BACKUP_FILE}" - | \
+                sha256sum | awk '{print $1}' | \
+                aws s3 cp - "s3://${BACKUP_BUCKET}/hourly/${BACKUP_FILE}.sha256"
+              
+              # Cleanup old backups (keep 24 hours)
+              aws s3 ls "s3://${BACKUP_BUCKET}/hourly/" | \
+                awk '{print $4}' | \
+                sort -r | \
+                tail -n +25 | \
+                xargs -I {} aws s3 rm "s3://${BACKUP_BUCKET}/hourly/{}"
+              
+              echo "Hourly backup completed: ${BACKUP_FILE}"
+              
+              # Send metrics
+              curl -X POST http://prometheus-pushgateway:9091/metrics/job/backup \
+                --data-binary "hsk_backup_completed_total{type=\"hourly\"} 1"
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "500m"
+              limits:
+                memory: "2Gi"
+                cpu: "2000m"
+            volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          volumes:
+          - name: tmp
+            emptyDir: {}
+          restartPolicy: OnFailure
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: database-backup-daily
+  namespace: hsk-verifier
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: backup-sa
+          containers:
+          - name: backup
+            image: postgres:15-alpine
+            env:
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: database-credentials
+                  key: host
+            - name: PGDATABASE
+              value: "consent_ledger"
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: database-credentials
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: database-credentials
+                  key: password
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: secret-access-key
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: BACKUP_BUCKET
+              value: "hsk-backups-primary"
+            - name: BACKUP_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-encryption
+                  key: key
+            - name: CROSS_REGION_BUCKET
+              value: "hsk-backups-replica"
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              TIMESTAMP=$(date +%Y%m%d)
+              BACKUP_FILE="consent_ledger_daily_${TIMESTAMP}.sql.gz.enc"
+              
+              echo "Starting daily backup at $(date)"
+              
+              # Create backup with encryption
+              pg_dump -Fc --verbose --blobs consent_ledger | \
+                gzip | \
+                openssl enc -aes-256-cbc -salt -pass pass:"$BACKUP_ENCRYPTION_KEY" | \
+                aws s3 cp - "s3://${BACKUP_BUCKET}/daily/${BACKUP_FILE}"
+              
+              # Cross-region replication
+              echo "Replicating to secondary region..."
+              aws s3 cp "s3://${BACKUP_BUCKET}/daily/${BACKUP_FILE}" \
+                "s3://${CROSS_REGION_BUCKET}/daily/${BACKUP_FILE}"
+              
+              # Verify both copies
+              aws s3 cp "s3://${BACKUP_BUCKET}/daily/${BACKUP_FILE}" - | \
+                openssl enc -aes-256-cbc -d -pass pass:"$BACKUP_ENCRYPTION_KEY" | \
+                gunzip | head -c 100 > /dev/null
+              
+              # Cleanup old backups (keep 30 days)
+              aws s3 ls "s3://${BACKUP_BUCKET}/daily/" | \
+                awk '{print $4}' | \
+                sort -r | \
+                tail -n +31 | \
+                xargs -I {} aws s3 rm "s3://${BACKUP_BUCKET}/daily/{}"
+              
+              echo "Daily backup completed: ${BACKUP_FILE}"
+            resources:
+              requests:
+                memory: "1Gi"
+                cpu: "1000m"
+              limits:
+                memory: "4Gi"
+                cpu: "4000m"
+          restartPolicy: OnFailure
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: database-backup-weekly
+  namespace: hsk-verifier
+spec:
+  schedule: "0 3 * * 0"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: backup-sa
+          containers:
+          - name: backup
+            image: postgres:15-alpine
+            env:
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: database-credentials
+                  key: host
+            - name: PGDATABASE
+              value: "consent_ledger"
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: database-credentials
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: database-credentials
+                  key: password
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: secret-access-key
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: BACKUP_BUCKET
+              value: "hsk-backups-primary"
+            - name: BACKUP_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-encryption
+                  key: key
+            - name: GLACIER_BUCKET
+              value: "hsk-backups-archive"
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              TIMESTAMP=$(date +%Y%m%d)
+              BACKUP_FILE="consent_ledger_weekly_${TIMESTAMP}.sql.gz.enc"
+              
+              echo "Starting weekly backup at $(date)"
+              
+              # Create backup with encryption
+              pg_dump -Fc --verbose --blobs consent_ledger | \
+                gzip | \
+                openssl enc -aes-256-cbc -salt -pass pass:"$BACKUP_ENCRYPTION_KEY" | \
+                aws s3 cp - "s3://${BACKUP_BUCKET}/weekly/${BACKUP_FILE}"
+              
+              # Archive to Glacier (7-year retention)
+              aws s3 cp "s3://${BACKUP_BUCKET}/weekly/${BACKUP_FILE}" \
+                "s3://${GLACIER_BUCKET}/weekly/${BACKUP_FILE}" \
+                --storage-class GLACIER
+              
+              # Set 7-year retention
+              aws s3api put-object-lock-configuration \
+                --bucket ${GLACIER_BUCKET} \
+                --object-lock-configuration '{"ObjectLockEnabled":"Enabled","Rule":{"DefaultRetention":{"Mode":"COMPLIANCE","Years":7}}}'
+              
+              echo "Weekly backup completed and archived: ${BACKUP_FILE}"
+            resources:
+              requests:
+                memory: "2Gi"
+                cpu: "2000m"
+              limits:
+                memory: "8Gi"
+                cpu: "8000m"
+          restartPolicy: OnFailure

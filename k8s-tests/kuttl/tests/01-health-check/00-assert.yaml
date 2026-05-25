@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: hs-verifier
+  namespace: hsk-verifier-test
+status:
+  phase: Running
+  containerStatuses:
+    - name: verifier
+      ready: true
+      restartCount: 0
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: transparency-log
+  namespace: hsk-verifier-test
+status:
+  phase: Running
+  containerStatuses:
+    - name: log-server
+      ready: true
+      restartCount: 0
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: transparency-db
+  namespace: hsk-verifier-test
+status:
+  phase: Running
+  containerStatuses:
+    - name: postgres
+      ready: true
+      restartCount: 0

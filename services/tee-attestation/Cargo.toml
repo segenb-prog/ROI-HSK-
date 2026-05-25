@@ -1,0 +1,31 @@
+[package]
+name = "hsk-tee-attestation"
+version = "1.0.0"
+edition = "2021"
+authors = ["HSK Team <team@hsk.platform>"]
+description = "TEE attestation for Intel SGX, ARM TrustZone, AMD SEV, Apple Secure Enclave"
+license = "AGPL-3.0"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
+hex = "0.4"
+
+# Optional TEE-specific dependencies
+sgx_tcrypto = { version = "0.1", optional = true }
+sgx_types = { version = "0.1", optional = true }
+aws-nitro-enclaves-nsm-api = { version = "0.4", optional = true }
+security-framework = { version = "2.9", optional = true }
+
+[features]
+default = []
+sgx = ["sgx_tcrypto", "sgx_types"]
+nitro = ["aws-nitro-enclaves-nsm-api"]
+ios = ["security-framework"]
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "attestation_benchmarks"
+harness = false

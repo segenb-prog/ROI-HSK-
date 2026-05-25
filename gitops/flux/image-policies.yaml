@@ -1,0 +1,170 @@
+# Image policies for automated updates
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: hsk-verifier
+  namespace: flux-system
+spec:
+  image: ghcr.io/hsk-platform/hsk-verifier
+  interval: 1m0s
+  secretRef:
+    name: ghcr-token
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: hsk-verifier-production
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: hsk-verifier
+  policy:
+    semver:
+      range: ">=1.0.0 <2.0.0"
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: hsk-verifier-staging
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: hsk-verifier
+  policy:
+    semver:
+      range: ">=0.0.0-0"
+    # Allow prerelease versions in staging
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: hsk-memory-passport
+  namespace: flux-system
+spec:
+  image: ghcr.io/hsk-platform/hsk-memory-passport
+  interval: 1m0s
+  secretRef:
+    name: ghcr-token
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: hsk-memory-passport-production
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: hsk-memory-passport
+  policy:
+    semver:
+      range: ">=1.0.0 <2.0.0"
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: hsk-deletion-proof
+  namespace: flux-system
+spec:
+  image: ghcr.io/hsk-platform/hsk-deletion-proof
+  interval: 1m0s
+  secretRef:
+    name: ghcr-token
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: hsk-deletion-proof-production
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: hsk-deletion-proof
+  policy:
+    semver:
+      range: ">=1.0.0 <2.0.0"
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: hsk-prediction-scope
+  namespace: flux-system
+spec:
+  image: ghcr.io/hsk-platform/hsk-prediction-scope
+  interval: 1m0s
+  secretRef:
+    name: ghcr-token
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: hsk-prediction-scope-production
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: hsk-prediction-scope
+  policy:
+    semver:
+      range: ">=1.0.0 <2.0.0"
+---
+# Image update automation configuration
+apiVersion: image.toolkit.fluxcd.io/v1beta1
+kind: ImageUpdateAutomation
+metadata:
+  name: hsk-platform-updates
+  namespace: flux-system
+spec:
+  interval: 5m0s
+  sourceRef:
+    kind: GitRepository
+    name: hsk-platform
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        name: Flux Bot
+        email: flux@hsk.platform
+      messageTemplate: |
+        Automated image update by Flux
+        
+        Images:
+        {{ range .Updated.Images -}}
+        - {{.}}
+        {{ end }}
+        
+        Configuration Changes:
+        {{ range .Updated.Objects -}}
+        - {{.Kind}}/{{.Name}} in {{.Namespace}}
+        {{ end }}
+    push:
+      branch: flux-image-updates-{{ .AutomationObject }}
+  policy:
+    semver:
+      range: ">=1.0.0"
+---
+# Automated PR creation for image updates
+apiVersion: notification.toolkit.fluxcd.io/v1beta3
+kind: Provider
+metadata:
+  name: github-pr
+  namespace: flux-system
+spec:
+  type: githubdispatch
+  address: https://github.com/hsk-platform/ri0-platform
+  secretRef:
+    name: github-token
+---
+apiVersion: notification.toolkit.fluxcd.io/v1beta3
+kind: Alert
+metadata:
+  name: image-update-pr
+  namespace: flux-system
+spec:
+  providerRef:
+    name: github-pr
+  eventSeverity: info
+  eventSources:
+    - kind: ImageUpdateAutomation
+      name: hsk-platform-updates
+  inclusionList:
+    - ".*update.*"

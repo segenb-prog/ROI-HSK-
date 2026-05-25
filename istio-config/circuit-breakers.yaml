@@ -1,0 +1,178 @@
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: circuit-breaker-config
+  namespace: hsk-verifier
+spec:
+  host: hs-verifier.hsk-verifier.svc.cluster.local
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+        connectTimeout: 30ms
+        tcpKeepalive:
+          time: 300s
+          interval: 75s
+      http:
+        h2UpgradePolicy: UPGRADE
+        http1MaxPendingRequests: 100
+        http2MaxRequests: 1000
+        requestsPerConnection: 100
+        maxRetries: 3
+    loadBalancer:
+      simple: LEAST_REQUEST
+      localityLbSetting:
+        enabled: true
+        failover:
+        - from: us-east-1
+          to: us-west-2
+        - from: us-west-2
+          to: us-east-1
+    outlierDetection:
+      # Circuit breaker settings
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      consecutiveGatewayErrors: 3
+      consecutiveLocalOriginFailures: 5
+    portLevelSettings:
+    - port:
+        number: 8080
+      connectionPool:
+        http:
+          http1MaxPendingRequests: 50
+          http2MaxRequests: 500
+      outlierDetection:
+        consecutive5xxErrors: 3
+        interval: 10s
+        baseEjectionTime: 60s
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: retry-policy
+  namespace: hsk-verifier
+spec:
+  hosts:
+  - hs-verifier.hsk-verifier.svc.cluster.local
+  http:
+  - route:
+    - destination:
+        host: hs-verifier.hsk-verifier.svc.cluster.local
+        port:
+          number: 8080
+    retries:
+      attempts: 3
+      perTryTimeout: 2s
+      retryOn: gateway-error,connect-failure,refused-stream,unavailable,cancelled,retriable-status-codes
+      retriableStatusCodes:
+      - 503
+      - 504
+    timeout: 10s
+    fault:
+      delay:
+        percentage:
+          value: 0.0
+        fixedDelay: 0s
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: traffic-mirroring
+  namespace: hsk-verifier
+spec:
+  hosts:
+  - hs-verifier.hsk-verifier.svc.cluster.local
+  http:
+  - match:
+    - headers:
+        x-shadow-test:
+          exact: "true"
+    route:
+    - destination:
+        host: hs-verifier.hsk-verifier.svc.cluster.local
+        subset: stable
+        port:
+          number: 8080
+      weight: 100
+    mirror:
+      host: hs-verifier-canary.hsk-verifier.svc.cluster.local
+      port:
+        number: 8080
+    mirrorPercentage:
+      value: 100.0
+  - route:
+    - destination:
+        host: hs-verifier.hsk-verifier.svc.cluster.local
+        subset: stable
+        port:
+          number: 8080
+      weight: 100
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: traffic-mirroring-subsets
+  namespace: hsk-verifier
+spec:
+  host: hs-verifier.hsk-verifier.svc.cluster.local
+  subsets:
+  - name: stable
+    labels:
+      version: stable
+  - name: canary
+    labels:
+      version: canary
+---
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default-mtls
+  namespace: hsk-verifier
+spec:
+  mtls:
+    mode: STRICT
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: hs-verifier-authz
+  namespace: hsk-verifier
+spec:
+  selector:
+    matchLabels:
+      app: hs-verifier
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account
+    to:
+    - operation:
+        methods:
+        - GET
+        - POST
+        paths:
+        - /health
+        - /challenge/*
+        - /response
+        - /certificates/*
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/hsk-verifier/sa/internal-service
+    to:
+    - operation:
+        methods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+  - to:
+    - operation:
+        methods:
+        - GET
+        paths:
+        - /health

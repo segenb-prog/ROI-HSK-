@@ -1,0 +1,113 @@
+global:
+  smtp_smarthost: 'localhost:587'
+  smtp_from: 'alerts@hskernel.dev'
+  smtp_auth_username: ''
+  smtp_auth_password: ''
+  slack_api_url: ''
+  pagerduty_url: ''
+
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+route:
+  receiver: 'default'
+  group_by: ['alertname', 'severity', 'namespace']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - match:
+        severity: critical
+      receiver: 'critical'
+      continue: true
+    - match:
+        severity: warning
+      receiver: 'warning'
+      continue: true
+    - match:
+        alertname: HSKViolationDetected
+      receiver: 'compliance-team'
+      continue: true
+    - match:
+        alertname: TransparencyLogOutOfSync
+      receiver: 'sre-team'
+      continue: true
+
+receivers:
+  - name: 'default'
+    email_configs:
+      - to: 'ops@hskernel.dev'
+        subject: 'HSK Alert: {{ .GroupLabels.alertname }}'
+        body: |
+          {{ range .Alerts }}
+          Alert: {{ .Annotations.summary }}
+          Description: {{ .Annotations.description }}
+          Severity: {{ .Labels.severity }}
+          Time: {{ .StartsAt }}
+          {{ end }}
+
+  - name: 'critical'
+    email_configs:
+      - to: 'oncall@hskernel.dev'
+        subject: '[CRITICAL] HSK Alert: {{ .GroupLabels.alertname }}'
+        body: |
+          CRITICAL ALERT
+          
+          {{ range .Alerts }}
+          Alert: {{ .Annotations.summary }}
+          Description: {{ .Annotations.description }}
+          System: {{ .Labels.system_id }}
+          Time: {{ .StartsAt }}
+          {{ end }}
+    slack_configs:
+      - channel: '#hsk-critical'
+        title: 'HSK Critical Alert'
+        text: |
+          {{ range .Alerts }}
+          *{{ .Annotations.summary }}*
+          {{ .Annotations.description }}
+          System: {{ .Labels.system_id }}
+          {{ end }}
+    pagerduty_configs:
+      - service_key: '<pagerduty-service-key>'
+        description: '{{ .GroupLabels.alertname }}'
+        severity: critical
+
+  - name: 'warning'
+    email_configs:
+      - to: 'ops@hskernel.dev'
+        subject: '[WARNING] HSK Alert: {{ .GroupLabels.alertname }}'
+    slack_configs:
+      - channel: '#hsk-alerts'
+        title: 'HSK Warning'
+        text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+
+  - name: 'compliance-team'
+    email_configs:
+      - to: 'compliance@hskernel.dev'
+        subject: '[HSK VIOLATION] New compliance violation detected'
+        body: |
+          A new HSK compliance violation has been detected.
+          
+          {{ range .Alerts }}
+          System: {{ .Labels.system_id }}
+          Certificate: {{ .Labels.certificate_id }}
+          Time: {{ .StartsAt }}
+          
+          Please review and take appropriate action.
+          {{ end }}
+
+  - name: 'sre-team'
+    email_configs:
+      - to: 'sre@hskernel.dev'
+        subject: '[HSK INFRA] Infrastructure alert'
+    slack_configs:
+      - channel: '#sre-hsk'
+        title: 'HSK Infrastructure Alert'
+
+ingibition_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'namespace']

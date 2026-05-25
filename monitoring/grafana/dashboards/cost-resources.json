@@ -1,0 +1,294 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "hsk-cost",
+    "title": "HSK - Cost & Resource Optimization",
+    "tags": ["hsk", "cost", "resources"],
+    "timezone": "utc",
+    "schemaVersion": 36,
+    "refresh": "1m",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Monthly Cost Estimate",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "hsk_cost_monthly_estimate_usd",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": 0},
+                {"color": "yellow", "value": 5000},
+                {"color": "red", "value": 10000}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "Cost by Service",
+        "type": "piechart",
+        "gridPos": {"h": 8, "w": 12, "x": 6, "y": 0},
+        "targets": [
+          {
+            "expr": "sum by (service) (hsk_cost_by_service_usd)",
+            "legendFormat": "{{service}}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "legend": {"displayMode": "table", "placement": "right", "values": ["value", "percent"]}
+        }
+      },
+      {
+        "id": 3,
+        "title": "Cost Trend",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 18, "y": 0},
+        "targets": [
+          {
+            "expr": "hsk_cost_daily_usd",
+            "legendFormat": "Daily Cost",
+            "refId": "A"
+          },
+          {
+            "expr": "avg_over_time(hsk_cost_daily_usd[7d])",
+            "legendFormat": "7-day Average",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": {"lineWidth": 2, "fillOpacity": 20}
+          }
+        }
+      },
+      {
+        "id": 4,
+        "title": "Resource Utilization",
+        "type": "gauge",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 4},
+        "targets": [
+          {
+            "expr": "avg(hsk_resource_utilization_percent)",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": 0},
+                {"color": "yellow", "value": 70},
+                {"color": "red", "value": 85}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 5,
+        "title": "Pod Resource Efficiency",
+        "type": "table",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "targets": [
+          {
+            "expr": "avg by (pod) (container_cpu_usage_seconds_total{pod=~\"hsk-.*\"}) / avg by (pod) (kube_pod_container_resource_limits{resource=\"cpu\"}) * 100",
+            "format": "table",
+            "refId": "A"
+          },
+          {
+            "expr": "avg by (pod) (container_memory_working_set_bytes{pod=~\"hsk-.*\"}) / avg by (pod) (kube_pod_container_resource_limits{resource=\"memory\"}) * 100",
+            "format": "table",
+            "refId": "B"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "merge",
+            "options": {}
+          },
+          {
+            "id": "organize",
+            "options": {
+              "renameByName": {
+                "Value #A": "CPU %",
+                "Value #B": "Memory %"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Storage Usage (GB)",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+        "targets": [
+          {
+            "expr": "hsk_database_size_bytes / 1024 / 1024 / 1024",
+            "legendFormat": "Database",
+            "refId": "A"
+          },
+          {
+            "expr": "hsk_audit_log_size_bytes / 1024 / 1024 / 1024",
+            "legendFormat": "Audit Logs",
+            "refId": "B"
+          },
+          {
+            "expr": "hsk_backup_size_bytes / 1024 / 1024 / 1024",
+            "legendFormat": "Backups",
+            "refId": "C"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "decgbytes",
+            "min": 0,
+            "custom": {"lineWidth": 2, "fillOpacity": 30}
+          }
+        }
+      },
+      {
+        "id": 7,
+        "title": "Network Egress (GB)",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+        "targets": [
+          {
+            "expr": "increase(hsk_network_egress_bytes[1d]) / 1024 / 1024 / 1024",
+            "legendFormat": "Daily Egress",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "decgbytes",
+            "min": 0,
+            "custom": {"lineWidth": 2, "fillOpacity": 20}
+          }
+        }
+      },
+      {
+        "id": 8,
+        "title": "Reserved vs Actual Usage",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+        "targets": [
+          {
+            "expr": "sum(kube_pod_container_resource_requests{resource=\"cpu\"})",
+            "legendFormat": "CPU Reserved",
+            "refId": "A"
+          },
+          {
+            "expr": "sum(container_cpu_usage_seconds_total)",
+            "legendFormat": "CPU Used",
+            "refId": "B"
+          },
+          {
+            "expr": "sum(kube_pod_container_resource_requests{resource=\"memory\"}) / 1024 / 1024 / 1024",
+            "legendFormat": "Memory Reserved (GB)",
+            "refId": "C"
+          },
+          {
+            "expr": "sum(container_memory_working_set_bytes) / 1024 / 1024 / 1024",
+            "legendFormat": "Memory Used (GB)",
+            "refId": "D"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "custom": {"lineWidth": 2}
+          }
+        }
+      },
+      {
+        "id": 9,
+        "title": "Auto-scaling Events",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+        "targets": [
+          {
+            "expr": "sum(rate(hsk_autoscaler_scale_up_total[5m]))",
+            "legendFormat": "Scale Up",
+            "refId": "A"
+          },
+          {
+            "expr": "sum(rate(hsk_autoscaler_scale_down_total[5m]))",
+            "legendFormat": "Scale Down",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "custom": {"lineWidth": 2, "fillOpacity": 30}
+          }
+        }
+      },
+      {
+        "id": 10,
+        "title": "Spot Instance Usage",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 24},
+        "targets": [
+          {
+            "expr": "hsk_spot_instance_percentage",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "thresholds": {
+              "steps": [
+                {"color": "yellow", "value": 0},
+                {"color": "green", "value": 50}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 11,
+        "title": "Cost Savings from Optimization",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 18, "y": 24},
+        "targets": [
+          {
+            "expr": "hsk_cost_savings_optimization_usd",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD"
+          }
+        }
+      }
+    ]
+  }
+}

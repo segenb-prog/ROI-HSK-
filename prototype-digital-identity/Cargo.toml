@@ -1,0 +1,65 @@
+[package]
+name = "digital-identity-prototype"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Digital Identity + Consent Ledger Integration Prototype"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/hskernel/hs-verifier"
+authors = ["HSKernel Team <team@hskernel.dev>"]
+
+[[bin]]
+name = "did-server"
+path = "src/main.rs"
+
+[profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1
+panic = 'abort'
+opt-level = 3
+
+[features]
+default = []
+integration-tests = []
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true }
+
+# Web framework
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Time handling
+chrono = { workspace = true }
+
+# Cryptography
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1.77"
+
+# Database
+sqlx = { workspace = true }
+
+# HTTP Client
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+tempfile = { workspace = true }
+reqwest = { workspace = true }

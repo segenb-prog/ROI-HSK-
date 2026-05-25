@@ -1,0 +1,177 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: didcomm-service
+  namespace: hsk-verifier
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: didcomm-service
+  template:
+    metadata:
+      labels:
+        app: didcomm-service
+    spec:
+      containers:
+      - name: didcomm
+        image: hskernel/didcomm-service:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: url
+        - name: REDIS_URL
+          value: "redis://redis:6379"
+        - name: DID_RESOLVER_URL
+          value: "https://resolver.hskernel.io"
+        - name: MESSAGE_ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: didcomm-keys
+              key: encryption-key
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "1000m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: didcomm-service
+  namespace: hsk-verifier
+spec:
+  selector:
+    app: didcomm-service
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: didcomm-config
+  namespace: hsk-verifier
+data:
+  config.yaml: |
+    # DIDComm Messaging Configuration
+    
+    didcomm:
+      version: "2.0"
+      
+      # Message types supported
+      message_types:
+        - https://didcomm.org/basicmessage/2.0/message
+        - https://didcomm.org/trust-ping/2.0/ping
+        - https://didcomm.org/trust-ping/2.0/ping-response
+        - https://didcomm.org/routing/2.0/forward
+        - https://hskernel.org/consent/1.0/request
+        - https://hskernel.org/consent/1.0/response
+        - https://hskernel.org/consent/1.0/revocation
+        - https://hskernel.org/verification/1.0/challenge
+        - https://hskernel.org/verification/1.0/response
+      
+      # Encryption
+      encryption:
+        algorithms:
+          - ECDH-ES+A256KW
+          - ECDH-1PU+A256KW
+        
+        curves:
+          - X25519
+          - P-256
+        
+        content_encryption:
+          - A256GCM
+          - A256CBC-HS512
+      
+      # Signing
+      signing:
+        algorithms:
+          - EdDSA
+          - ES256
+        
+        curves:
+          - Ed25519
+          - P-256
+      
+      # Transport
+      transport:
+        http:
+          enabled: true
+          port: 8080
+        
+        websocket:
+          enabled: true
+          port: 8081
+        
+        mediator:
+          enabled: true
+          default_mediator: "did:hsk:mediator"
+      
+      # Routing
+      routing:
+        enabled: true
+        max_hops: 5
+        
+        mediators:
+          - did: "did:hsk:mediator:1"
+            endpoint: "https://mediator1.hskernel.io"
+          - did: "did:hsk:mediator:2"
+            endpoint: "https://mediator2.hskernel.io"
+      
+      # Federation
+      federation:
+        enabled: true
+        
+        trusted_domains:
+          - hskernel.io
+          - partner1.org
+          - partner2.org
+        
+        cross_org_consent:
+          enabled: true
+          verification_required: true
+          
+          message_flow:
+            1: "Org A requests consent from user"
+            2: "User approves via DIDComm message"
+            3: "Consent proof shared with Org B"
+            4: "Org B verifies consent cryptographically"
+    
+    # Consent sharing protocol
+    consent_sharing:
+      protocol: "https://hskernel.org/consent/1.0"
+      
+      messages:
+        consent_request:
+          type: "https://hskernel.org/consent/1.0/request"
+          body:
+            - requester_did
+            - purpose
+            - data_categories
+            - retention_period
+            - legal_basis
+        
+        consent_response:
+          type: "https://hskernel.org/consent/1.0/response"
+          body:
+            - consent_id
+            - status  # granted, denied, pending
+            - scope
+            - expiration
+            - proof
+        
+        consent_revocation:
+          type: "https://hskernel.org/consent/1.0/revocation"
+          body:
+            - consent_id
+            - revocation_reason
+            - effective_date
+            - proof

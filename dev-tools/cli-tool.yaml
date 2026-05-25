@@ -1,0 +1,238 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hsk-cli-build
+  namespace: hsk-verifier
+spec:
+  template:
+    spec:
+      containers:
+      - name: builder
+        image: rust:1.75
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Build HSK CLI tool
+          cargo build --release --bin hsk
+          
+          # Create release artifacts
+          mkdir -p /releases
+          cp target/release/hsk /releases/hsk-linux-amd64
+          
+          # Build for other platforms
+          rustup target add x86_64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin --bin hsk
+          cp target/x86_64-apple-darwin/release/hsk /releases/hsk-darwin-amd64
+          
+          # Create checksums
+          cd /releases
+          sha256sum * > checksums.txt
+        volumeMounts:
+        - name: releases
+          mountPath: /releases
+      volumes:
+      - name: releases
+        emptyDir: {}
+      restartPolicy: Never
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hsk-cli-config
+  namespace: hsk-verifier
+data:
+  cli.yaml: |
+    # HSK CLI Tool Configuration
+    
+    name: hsk
+    version: "1.0.0"
+    description: "HSK Platform CLI Tool"
+    
+    commands:
+      # Identity management
+      identity:
+        description: "Manage decentralized identities"
+        
+        subcommands:
+          create:
+            description: "Create a new identity"
+            flags:
+              - name: output
+                short: o
+                description: "Output file for private key"
+          
+          import:
+            description: "Import an existing identity"
+            args:
+              - name: private-key-file
+                required: true
+          
+          list:
+            description: "List all identities"
+          
+          export:
+            description: "Export an identity"
+            args:
+              - name: did
+                required: true
+      
+      # Consent management
+      consent:
+        description: "Manage consent grants"
+        
+        subcommands:
+          grant:
+            description: "Grant consent"
+            flags:
+              - name: did
+                required: true
+              - name: purpose
+                required: true
+              - name: data-categories
+                required: true
+              - name: retention-days
+                default: 365
+              - name: legal-basis
+                default: consent
+          
+          revoke:
+            description: "Revoke consent"
+            args:
+              - name: consent-id
+                required: true
+          
+          list:
+            description: "List consent history"
+            flags:
+              - name: did
+                required: true
+      
+      # Verification
+      verify:
+        description: "Verify consent or certificates"
+        
+        subcommands:
+          consent:
+            description: "Verify a consent entry"
+            args:
+              - name: consent-id
+                required: true
+          
+          certificate:
+            description: "Verify a certificate"
+            args:
+              - name: certificate-id
+                required: true
+          
+          chain:
+            description: "Verify hash chain integrity"
+            flags:
+              - name: did
+                required: true
+      
+      # Transparency log
+      transparency:
+        description: "Interact with transparency logs"
+        
+        subcommands:
+          submit:
+            description: "Submit entry to transparency log"
+            flags:
+              - name: data
+                required: true
+          
+          verify:
+            description: "Verify inclusion proof"
+            args:
+              - name: entry-hash
+                required: true
+          
+          audit:
+            description: "Audit transparency log"
+            flags:
+              - name: start
+              - name: end
+      
+      # GDPR
+      gdpr:
+        description: "GDPR data subject rights"
+        
+        subcommands:
+          export:
+            description: "Export personal data"
+            flags:
+              - name: did
+                required: true
+              - name: format
+                default: json
+          
+          delete:
+            description: "Request data deletion"
+            flags:
+              - name: did
+                required: true
+              - name: reason
+      
+      # System
+      system:
+        description: "System operations"
+        
+        subcommands:
+          health:
+            description: "Check system health"
+          
+          status:
+            description: "Get system status"
+          
+          metrics:
+            description: "Get system metrics"
+      
+      # Configuration
+      config:
+        description: "Manage CLI configuration"
+        
+        subcommands:
+          set:
+            description: "Set configuration value"
+            args:
+              - name: key
+                required: true
+              - name: value
+                required: true
+          
+          get:
+            description: "Get configuration value"
+            args:
+              - name: key
+                required: true
+          
+          list:
+            description: "List all configuration"
+    
+    # Configuration file
+    config_file:
+      path: "~/.hsk/config.yaml"
+      
+      defaults:
+        api_url: "https://api.hskernel.io"
+        auth_url: "https://auth.hskernel.io"
+        timeout: 30
+        output_format: json
+    
+    # Examples
+    examples:
+      - description: "Create a new identity"
+        command: "hsk identity create --output my-identity.json"
+      
+      - description: "Grant consent"
+        command: "hsk consent grant --did did:hsk:abc123 --purpose Marketing --data-categories email,name"
+      
+      - description: "Verify consent"
+        command: "hsk verify consent cons_abc123"
+      
+      - description: "Export personal data"
+        command: "hsk gdpr export --did did:hsk:abc123 --format json"
+      
+      - description: "Check system health"
+        command: "hsk system health"

@@ -1,0 +1,21 @@
+[package]
+name = "hsk-universal-consent-protocol"
+version = "1.0.0"
+edition = "2021"
+authors = ["HSK Team <team@hsk.platform>"]
+description = "Universal Consent Protocol - Cross-domain consent federation"
+license = "AGPL-3.0"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "ucp_benchmarks"
+harness = false

@@ -1,0 +1,110 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hs-verifier
+  namespace: hsk-verifier
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["hsk-keyring", "transparency-db-credentials"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hs-verifier
+  namespace: hsk-verifier
+subjects:
+  - kind: ServiceAccount
+    name: hs-verifier
+    namespace: hsk-verifier
+roleRef:
+  kind: Role
+  name: hs-verifier
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: transparency-log
+  namespace: hsk-verifier
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["transparency-log-db", "transparency-signing-key"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: transparency-log
+  namespace: hsk-verifier
+subjects:
+  - kind: ServiceAccount
+    name: transparency-log
+    namespace: hsk-verifier
+roleRef:
+  kind: Role
+  name: transparency-log
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hsk-verifier-metrics-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hsk-verifier-metrics-reader
+subjects:
+  - kind: ServiceAccount
+    name: hs-verifier
+    namespace: hsk-verifier
+roleRef:
+  kind: ClusterRole
+  name: hsk-verifier-metrics-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: transparency-db
+  namespace: hsk-verifier
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["transparency-db-credentials"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: transparency-db
+  namespace: hsk-verifier
+subjects:
+  - kind: ServiceAccount
+    name: transparency-db
+    namespace: hsk-verifier
+roleRef:
+  kind: Role
+  name: transparency-db
+  apiGroup: rbac.authorization.k8s.io

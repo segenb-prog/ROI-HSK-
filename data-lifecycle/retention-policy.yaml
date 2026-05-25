@@ -1,0 +1,243 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: data-retention-enforcer
+  namespace: hsk-verifier
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: data-lifecycle-sa
+          containers:
+          - name: retention-enforcer
+            image: postgres:15-alpine
+            env:
+            - name: PGHOST
+              value: "transparency-db"
+            - name: PGDATABASE
+              value: "consent_ledger"
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: database-credentials
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: database-credentials
+                  key: password
+            - name: ARCHIVE_BUCKET
+              value: "hsk-data-archive"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: secret-access-key
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              
+              echo "Starting data retention enforcement at $(date)"
+              
+              # Archive expired consent entries (retention + 7 years)
+              echo "Archiving expired consent entries..."
+              psql -c "
+                COPY (
+                  SELECT * FROM consent_entries
+                  WHERE expires_at < NOW() - INTERVAL '7 years'
+                  AND archived = false
+                ) TO STDOUT WITH CSV HEADER
+              " | gzip | aws s3 cp - "s3://${ARCHIVE_BUCKET}/consent_entries/$(date +%Y%m%d).csv.gz"
+              
+              # Mark as archived
+              psql -c "
+                UPDATE consent_entries
+                SET archived = true
+                WHERE expires_at < NOW() - INTERVAL '7 years'
+                AND archived = false
+              "
+              
+              # Anonymize old access logs (2 years)
+              echo "Anonymizing old access logs..."
+              psql -c "
+                UPDATE access_logs
+                SET 
+                  ip_address = md5(ip_address),
+                  user_agent = NULL,
+                  request_headers = NULL
+                WHERE created_at < NOW() - INTERVAL '2 years'
+                AND anonymized = false
+              "
+              
+              # Delete old session data (30 days)
+              echo "Deleting old session data..."
+              psql -c "
+                DELETE FROM sessions
+                WHERE last_activity < NOW() - INTERVAL '30 days'
+              "
+              
+              # Delete old MFA codes (24 hours)
+              echo "Deleting old MFA codes..."
+              psql -c "
+                DELETE FROM mfa_codes
+                WHERE created_at < NOW() - INTERVAL '24 hours'
+              "
+              
+              # Archive old audit logs to Glacier (7 years)
+              echo "Archiving old audit logs..."
+              psql -c "
+                COPY (
+                  SELECT * FROM audit_logs
+                  WHERE created_at < NOW() - INTERVAL '7 years'
+                  AND archived = false
+                ) TO STDOUT WITH CSV HEADER
+              " | gzip | aws s3 cp - "s3://${ARCHIVE_BUCKET}/audit_logs/$(date +%Y%m%d).csv.gz" \
+                --storage-class GLACIER
+              
+              # Mark audit logs as archived
+              psql -c "
+                UPDATE audit_logs
+                SET archived = true
+                WHERE created_at < NOW() - INTERVAL '7 years'
+                AND archived = false
+              "
+              
+              # Purge deleted user data (GDPR - 30 days after deletion request)
+              echo "Purging deleted user data..."
+              psql -c "
+                DELETE FROM consent_entries
+                WHERE did IN (
+                  SELECT did FROM deletion_requests
+                  WHERE status = 'approved'
+                  AND approved_at < NOW() - INTERVAL '30 days'
+                )
+              "
+              
+              # Update statistics
+              echo "Updating statistics..."
+              psql -c "ANALYZE"
+              
+              echo "Data retention enforcement completed at $(date)"
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "500m"
+              limits:
+                memory: "2Gi"
+                cpu: "2000m"
+          restartPolicy: OnFailure
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: retention-policies
+  namespace: hsk-verifier
+data:
+  policies.yaml: |
+    # Data Retention Policies
+    
+    policies:
+      - name: consent_entries
+        description: "User consent records"
+        retention_period: "7 years after consent expiration"
+        action: archive_then_delete
+        archive_location: "s3://hsk-data-archive/consent_entries/"
+        legal_basis: "Legal obligation (audit)"
+      
+      - name: transparency_log
+        description: "Transparency log entries"
+        retention_period: "7 years"
+        action: retain_immutable
+        legal_basis: "Legal obligation (transparency)"
+        notes: "Cryptographically immutable, cannot be deleted"
+      
+      - name: audit_logs
+        description: "System audit logs"
+        retention_period: "7 years"
+        action: archive_to_glacier
+        archive_location: "s3://hsk-data-archive/audit_logs/"
+        legal_basis: "Legal obligation (compliance)"
+      
+      - name: access_logs
+        description: "HTTP access logs"
+        retention_period: "2 years"
+        action: anonymize
+        anonymization_fields:
+          - ip_address
+          - user_agent
+          - request_headers
+      
+      - name: sessions
+        description: "User session data"
+        retention_period: "30 days of inactivity"
+        action: delete
+      
+      - name: mfa_codes
+        description: "Temporary MFA codes"
+        retention_period: "24 hours"
+        action: delete
+      
+      - name: password_reset_tokens
+        description: "Password reset tokens"
+        retention_period: "1 hour"
+        action: delete
+      
+      - name: gdpr_requests
+        description: "GDPR data subject requests"
+        retention_period: "7 years"
+        action: retain
+        legal_basis: "Legal obligation (demonstrating compliance)"
+      
+      - name: deletion_requests
+        description: "Data deletion requests"
+        retention_period: "7 years after completion"
+        action: retain_anonymized
+        legal_basis: "Legal obligation (demonstrating compliance)"
+      
+      - name: backup_metadata
+        description: "Backup job metadata"
+        retention_period: "1 year"
+        action: delete
+      
+      - name: error_logs
+        description: "Application error logs"
+        retention_period: "90 days"
+        action: delete
+      
+      - name: metrics
+        description: "Prometheus metrics"
+        retention_period: "15 days"
+        action: delete
+        notes: "Long-term storage in Thanos/Cortex"
+    
+    # Special handling for GDPR
+    gdpr:
+      right_to_erasure:
+        grace_period: "30 days"
+        verification_required: true
+        audit_trail: true
+      
+      data_portability:
+        format: "JSON"
+        timeline: "30 days"
+        include:
+          - consent_entries
+          - transparency_log_entries
+          - audit_logs
+    
+    # Automated actions
+    automation:
+      daily_cleanup: true
+      weekly_archive: true
+      monthly_report: true
+      quarterly_review: true

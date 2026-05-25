@@ -1,0 +1,258 @@
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: hsk-istio
+spec:
+  profile: default
+  hub: docker.io/istio
+  tag: 1.20.0
+  components:
+    pilot:
+      k8s:
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+        hpaSpec:
+          minReplicas: 2
+          maxReplicas: 5
+          metrics:
+          - type: Resource
+            resource:
+              name: cpu
+              targetAverageUtilization: 80
+    ingressGateways:
+    - name: istio-ingressgateway
+      enabled: true
+      k8s:
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+        hpaSpec:
+          minReplicas: 2
+          maxReplicas: 5
+        service:
+          type: LoadBalancer
+          ports:
+          - name: status-port
+            port: 15021
+            targetPort: 15021
+          - name: http2
+            port: 80
+            targetPort: 8080
+          - name: https
+            port: 443
+            targetPort: 8443
+          - name: tls
+            port: 15443
+            targetPort: 15443
+        overlays:
+        - apiVersion: apps/v1
+          kind: Deployment
+          name: istio-ingressgateway
+          patches:
+          - path: spec.template.spec.containers.[name:istio-proxy].securityContext.capabilities.drop
+            value: ["ALL"]
+    egressGateways:
+    - name: istio-egressgateway
+      enabled: true
+      k8s:
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+  meshConfig:
+    defaultConfig:
+      proxyMetadata:
+        ISTIO_META_DNS_CAPTURE: "true"
+      tracing:
+        sampling: 100.0
+        customTags:
+          environment:
+            literal:
+              value: production
+      proxyStatsMatcher:
+        inclusionRegexps:
+        - ".*hsk.*"
+    enableAutoMtls: true
+    enableAutoSni: true
+    outboundTrafficPolicy:
+      mode: REGISTRY_ONLY
+    extensionProviders:
+    - name: prometheus
+      prometheus: {}
+    - name: otel-collector
+      opentelemetry:
+        service: otel-collector.monitoring.svc.cluster.local
+        port: 4317
+    - name: jaeger
+      zipkin:
+        service: jaeger-collector.monitoring.svc.cluster.local
+        port: 9411
+  values:
+    global:
+      proxy:
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+      istiod:
+        enableAnalysis: true
+    pilot:
+      env:
+        PILOT_ENABLE_CROSS_CLUSTER_WORKLOAD_ENTRY: "true"
+        PILOT_ENABLE_ALPHA_GATEWAY_API: "true"
+    gateways:
+      istio-ingressgateway:
+        runAsRoot: false
+      istio-egressgateway:
+        runAsRoot: false
+---
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: hsk-gateway
+  namespace: hsk-verifier
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: hsk-tls-secret
+      minProtocolVersion: TLSV1_3
+      cipherSuites:
+      - TLS_AES_256_GCM_SHA384
+      - TLS_CHACHA20_POLY1305_SHA256
+    hosts:
+    - "api.hskernel.io"
+    - "*.hskernel.io"
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"
+    tls:
+      httpsRedirect: true
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: hs-verifier-mtls
+  namespace: hsk-verifier
+spec:
+  host: hs-verifier.hsk-verifier.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        h2UpgradePolicy: UPGRADE
+        http1MaxPendingRequests: 100
+        http2MaxRequests: 1000
+    loadBalancer:
+      simple: LEAST_REQUEST
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: transparency-db-mtls
+  namespace: hsk-verifier
+spec:
+  host: transparency-db.hsk-verifier.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      tcp:
+        maxConnections: 50
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: hs-verifier-routing
+  namespace: hsk-verifier
+spec:
+  hosts:
+  - "api.hskernel.io"
+  gateways:
+  - hsk-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /health
+    route:
+    - destination:
+        host: hs-verifier.hsk-verifier.svc.cluster.local
+        port:
+          number: 8080
+    timeout: 5s
+    retries:
+      attempts: 3
+      perTryTimeout: 2s
+      retryOn: gateway-error,connect-failure,refused-stream
+  - match:
+    - uri:
+        prefix: /challenge
+    route:
+    - destination:
+        host: hs-verifier.hsk-verifier.svc.cluster.local
+        port:
+          number: 8080
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: hs-verifier.hsk-verifier.svc.cluster.local
+        port:
+          number: 8080
+    fault:
+      delay:
+        percentage:
+          value: 0.1
+        fixedDelay: 5s
+    corsPolicy:
+      allowOrigins:
+      - exact: "https://app.hskernel.io"
+      - exact: "https://admin.hskernel.io"
+      allowMethods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+      allowHeaders:
+      - authorization
+      - content-type
+      - x-request-id
+      allowCredentials: true
+      maxAge: "24h"
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default-strict-mtls
+  namespace: hsk-verifier
+spec:
+  mtls:
+    mode: STRICT

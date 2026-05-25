@@ -1,0 +1,263 @@
+# Flux GitOps Toolkit components
+# This file contains the core Flux controllers for GitOps operations
+# Apply with: flux install --export > gotk-components.yaml
+
+---
+# Source Controller - manages GitRepository, HelmRepository, Bucket sources
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flux-system
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: hsk-platform
+  namespace: flux-system
+spec:
+  interval: 1m0s
+  url: https://github.com/hsk-platform/ri0-platform.git
+  ref:
+    branch: main
+  secretRef:
+    name: github-token
+---
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: HelmRepository
+metadata:
+  name: jetstack
+  namespace: flux-system
+spec:
+  interval: 1h0s
+  url: https://charts.jetstack.io
+---
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: HelmRepository
+metadata:
+  name: grafana
+  namespace: flux-system
+spec:
+  interval: 1h0s
+  url: https://grafana.github.io/helm-charts
+---
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: HelmRepository
+metadata:
+  name: prometheus-community
+  namespace: flux-system
+spec:
+  interval: 1h0s
+  url: https://prometheus-community.github.io/helm-charts
+---
+# Kustomization Controller - applies Kustomize overlays
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: hsk-platform-infra
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  path: ./kubernetes/overlays/production
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: hsk-platform
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: hsk-verifier
+      namespace: hsk-production
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: hsk-memory-passport
+      namespace: hsk-production
+  timeout: 5m0s
+  dependsOn:
+    - name: hsk-vault-config
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: hsk-monitoring
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  path: ./monitoring/kube-prometheus-stack
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: hsk-platform
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: StatefulSet
+      name: prometheus
+      namespace: monitoring
+  timeout: 10m0s
+---
+# Helm Release Controller - manages Helm releases
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: cert-manager
+      version: "1.13.x"
+      sourceRef:
+        kind: HelmRepository
+        name: jetstack
+        namespace: flux-system
+      interval: 1m
+  values:
+    installCRDs: true
+    prometheus:
+      enabled: true
+      servicemonitor:
+        enabled: true
+---
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  name: vault
+  namespace: vault
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: vault
+      version: "0.27.x"
+      sourceRef:
+        kind: HelmRepository
+        name: hashicorp
+        namespace: flux-system
+      interval: 1m
+  values:
+    server:
+      ha:
+        enabled: true
+        replicas: 3
+      dataStorage:
+        enabled: true
+        size: 10Gi
+---
+# Image Automation Controller - automated image updates
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: hsk-verifier
+  namespace: flux-system
+spec:
+  image: ghcr.io/hsk-platform/hsk-verifier
+  interval: 1m0s
+  secretRef:
+    name: ghcr-token
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: hsk-verifier
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: hsk-verifier
+  policy:
+    semver:
+      range: ">=1.0.0"
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta1
+kind: ImageUpdateAutomation
+metadata:
+  name: hsk-platform
+  namespace: flux-system
+spec:
+  interval: 1m0s
+  sourceRef:
+    kind: GitRepository
+    name: hsk-platform
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        name: Flux Bot
+        email: flux@hsk.platform
+      messageTemplate: |
+        Automated image update
+        
+        Images:
+        {{ range .Updated.Images -}}
+        - {{.}}
+        {{ end }}
+      signingKey:
+        secretRef:
+          name: flux-gpg-signing-key
+    push:
+      branch: main
+  policy:
+    semver:
+      range: ">=1.0.0"
+---
+# Notification Controller - handles alerts and notifications
+apiVersion: notification.toolkit.fluxcd.io/v1beta3
+kind: Provider
+metadata:
+  name: slack
+  namespace: flux-system
+spec:
+  type: slack
+  channel: deployments
+  secretRef:
+    name: slack-webhook
+---
+apiVersion: notification.toolkit.fluxcd.io/v1beta3
+kind: Alert
+metadata:
+  name: hsk-platform-alerts
+  namespace: flux-system
+spec:
+  providerRef:
+    name: slack
+  eventSeverity: info
+  eventSources:
+    - kind: Kustomization
+      name: hsk-platform-infra
+    - kind: HelmRelease
+      name: cert-manager
+      namespace: cert-manager
+    - kind: HelmRelease
+      name: vault
+      namespace: vault
+  exclusionList:
+    - ".*succeeded.*"
+    - ".*no changes.*"
+---
+apiVersion: notification.toolkit.fluxcd.io/v1beta3
+kind: Provider
+metadata:
+  name: pagerduty
+  namespace: flux-system
+spec:
+  type: pagerduty
+  channel: hsk-platform
+  secretRef:
+    name: pagerduty-key
+---
+apiVersion: notification.toolkit.fluxcd.io/v1beta3
+kind: Alert
+metadata:
+  name: hsk-platform-critical
+  namespace: flux-system
+spec:
+  providerRef:
+    name: pagerduty
+  eventSeverity: error
+  eventSources:
+    - kind: Kustomization
+      name: hsk-platform-infra
+  inclusionList:
+    - ".*failed.*"
+    - ".*error.*"

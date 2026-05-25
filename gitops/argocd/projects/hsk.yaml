@@ -1,0 +1,79 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: hsk-platform
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Human Sovereignty Kernel Platform
+  
+  sourceRepos:
+    - https://github.com/hsk-platform/ri0-platform.git
+    - https://charts.jetstack.io
+    - https://grafana.github.io/helm-charts
+    - https://prometheus-community.github.io/helm-charts
+    - https://istio-release.storage.googleapis.com/charts
+  
+  destinations:
+    - namespace: hsk-production
+      server: https://kubernetes.default.svc
+    - namespace: hsk-staging
+      server: https://kubernetes.default.svc
+    - namespace: hsk-development
+      server: https://kubernetes.default.svc
+    - namespace: monitoring
+      server: https://kubernetes.default.svc
+    - namespace: vault
+      server: https://kubernetes.default.svc
+    - namespace: istio-system
+      server: https://kubernetes.default.svc
+  
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+  
+  namespaceResourceBlacklist:
+    - group: ''
+      kind: ResourceQuota
+    - group: ''
+      kind: LimitRange
+  
+  orphanedResources:
+    warn: true
+  
+  roles:
+    - name: admin
+      description: Admin access to HSK platform
+      policies:
+        - p, proj:hsk-platform:admin, applications, *, hsk-platform/*, allow
+        - p, proj:hsk-platform:admin, exec, create, hsk-platform/*, allow
+      groups:
+        - hsk-admins
+    
+    - name: developer
+      description: Developer access (read-only production, full staging)
+      policies:
+        - p, proj:hsk-platform:developer, applications, get, hsk-platform/*, allow
+        - p, proj:hsk-platform:developer, applications, sync, hsk-platform/hsk-platform-staging, allow
+        - p, proj:hsk-platform:developer, applications, override, hsk-platform/hsk-platform-staging, allow
+        - p, proj:hsk-platform:developer, exec, create, hsk-platform/hsk-platform-staging, allow
+      groups:
+        - hsk-developers
+    
+    - name: readonly
+      description: Read-only access
+      policies:
+        - p, proj:hsk-platform:readonly, applications, get, hsk-platform/*, allow
+      groups:
+        - hsk-viewers

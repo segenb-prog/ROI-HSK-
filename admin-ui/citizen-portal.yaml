@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: citizen-portal
+  namespace: hsk-verifier
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: citizen-portal
+  template:
+    metadata:
+      labels:
+        app: citizen-portal
+    spec:
+      containers:
+      - name: portal
+        image: hskernel/citizen-portal:latest
+        ports:
+        - containerPort: 3000
+        env:
+        - name: REACT_APP_API_URL
+          value: "https://api.hskernel.io"
+        - name: REACT_APP_AUTH_URL
+          value: "https://auth.hskernel.io"
+        - name: REACT_APP_EXPORT_URL
+          value: "https://export.hskernel.io"
+        - name: REACT_APP_ENV
+          value: "production"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "1000m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: citizen-portal
+  namespace: hsk-verifier
+spec:
+  selector:
+    app: citizen-portal
+  ports:
+  - port: 3000
+    targetPort: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: citizen-portal-ingress
+  namespace: hsk-verifier
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - app.hskernel.io
+    secretName: portal-tls
+  rules:
+  - host: app.hskernel.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: citizen-portal
+            port:
+              number: 3000
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: citizen-portal-config
+  namespace: hsk-verifier
+data:
+  config.json: |
+    {
+      "app": {
+        "name": "HSK Citizen Portal",
+        "tagline": "Control Your Digital Identity",
+        "version": "1.0.0"
+      },
+      "features": {
+        "identityManagement": true,
+        "consentManagement": true,
+        "dataExport": true,
+        "gdprRequests": true,
+        "transparencyLog": true,
+        "notifications": true
+      },
+      "pages": [
+        {
+          "name": "Home",
+          "path": "/",
+          "icon": "home",
+          "description": "Overview of your identity and consents"
+        },
+        {
+          "name": "My Identity",
+          "path": "/identity",
+          "icon": "identity",
+          "description": "Manage your decentralized identity"
+        },
+        {
+          "name": "My Consents",
+          "path": "/consents",
+          "icon": "consent",
+          "description": "View and manage your consent grants"
+        },
+        {
+          "name": "Data Export",
+          "path": "/export",
+          "icon": "download",
+          "description": "Download your data (GDPR Article 20)"
+        },
+        {
+          "name": "Delete My Data",
+          "path": "/delete",
+          "icon": "delete",
+          "description": "Request deletion of your data (GDPR Article 17)"
+        },
+        {
+          "name": "Transparency Log",
+          "path": "/transparency",
+          "icon": "visibility",
+          "description": "View audit trail of your data"
+        },
+        {
+          "name": "Settings",
+          "path": "/settings",
+          "icon": "settings",
+          "description": "Manage your preferences"
+        }
+      ],
+      "gdpr": {
+        "dpoContact": "dpo@hskernel.io",
+        "responseTime": "30 days",
+        "dataRetentionInfo": "https://hskernel.io/privacy/retention"
+      },
+      "ui": {
+        "theme": {
+          "primaryColor": "#1976d2",
+          "secondaryColor": "#dc004e",
+          "backgroundColor": "#f5f5f5"
+        },
+        "accessibility": {
+          "wcagLevel": "AA",
+          "screenReaderSupport": true,
+          "keyboardNavigation": true
+        }
+      }
+    }

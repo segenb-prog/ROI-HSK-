@@ -1,0 +1,24 @@
+[package]
+name = "hsk-formal-verification"
+version = "1.0.0"
+edition = "2021"
+authors = ["HSK Team <team@hsk.platform>"]
+description = "Formally verified core for HSK consent operations"
+license = "AGPL-3.0"
+
+[dependencies]
+creusot-contracts = { git = "https://github.com/creusot-rs/creusot.git" }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+sha2 = "0.10"
+rand = "0.8"
+
+[dev-dependencies]
+proptest = "1.4"
+
+[[bin]]
+name = "verify-proofs"
+path = "src/bin/verify.rs"
+
+[features]
+default = []
+verify = ["creusot-contracts/verify"]

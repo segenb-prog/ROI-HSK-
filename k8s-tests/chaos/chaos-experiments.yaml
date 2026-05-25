@@ -1,0 +1,100 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: Workflow
+metadata:
+  name: hsk-chaos-suite
+  namespace: hsk-verifier
+spec:
+  entry: entry
+  templates:
+    - name: entry
+      templateType: Serial
+      deadline: 30m
+      children:
+        - pod-failure-verifier
+        - network-delay
+        - pod-kill-database
+        - stress-test
+        - io-chaos
+
+    # Pod Failure - Verifier
+    - name: pod-failure-verifier
+      templateType: PodChaos
+      deadline: 5m
+      podChaos:
+        action: pod-failure
+        mode: one
+        selector:
+          namespaces:
+            - hsk-verifier
+          labelSelectors:
+            app: hs-verifier
+        duration: 2m
+
+    # Network Delay
+    - name: network-delay
+      templateType: NetworkChaos
+      deadline: 5m
+      networkChaos:
+        action: delay
+        mode: all
+        selector:
+          namespaces:
+            - hsk-verifier
+          labelSelectors:
+            app: hs-verifier
+        delay:
+          latency: 100ms
+          correlation: '50'
+          jitter: 50ms
+        duration: 3m
+
+    # Pod Kill - Database
+    - name: pod-kill-database
+      templateType: PodChaos
+      deadline: 5m
+      podChaos:
+        action: pod-kill
+        mode: one
+        selector:
+          namespaces:
+            - hsk-verifier
+          labelSelectors:
+            app: transparency-db
+
+    # Stress Test
+    - name: stress-test
+      templateType: StressChaos
+      deadline: 5m
+      stressChaos:
+        mode: one
+        selector:
+          namespaces:
+            - hsk-verifier
+          labelSelectors:
+            app: hs-verifier
+        stressors:
+          cpu:
+            workers: 2
+            load: 80
+          memory:
+            workers: 2
+            size: 256MiB
+        duration: 3m
+
+    # IO Chaos
+    - name: io-chaos
+      templateType: IOChaos
+      deadline: 5m
+      ioChaos:
+        action: latency
+        mode: one
+        selector:
+          namespaces:
+            - hsk-verifier
+          labelSelectors:
+            app: transparency-db
+        volumePath: /var/lib/postgresql/data
+        path: /var/lib/postgresql/data/**/**
+        delay: 100ms
+        percent: 50
+        duration: 3m

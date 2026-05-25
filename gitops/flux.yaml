@@ -1,0 +1,227 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: hsk-platform
+  namespace: flux-system
+spec:
+  interval: 1m
+  url: https://github.com/hskernel/hs-verifier
+  ref:
+    branch: main
+  secretRef:
+    name: github-token
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: hsk-platform
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./k8s-deployments/overlays/production
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: hsk-platform
+  healthChecks:
+  - apiVersion: apps/v1
+    kind: Deployment
+    name: hs-verifier
+    namespace: hsk-verifier
+  - apiVersion: apps/v1
+    kind: Deployment
+    name: transparency-log
+    namespace: hsk-verifier
+  timeout: 5m
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: hs-verifier
+  namespace: flux-system
+spec:
+  image: hskernel/hs-verifier
+  interval: 5m
+  secretRef:
+    name: dockerhub-token
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: hs-verifier
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: hs-verifier
+  policy:
+    semver:
+      range: '>=1.0.0'
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta1
+kind: ImageUpdateAutomation
+metadata:
+  name: hsk-platform
+  namespace: flux-system
+spec:
+  interval: 5m
+  sourceRef:
+    kind: GitRepository
+    name: hsk-platform
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        name: Flux Bot
+        email: flux@hskernel.io
+      messageTemplate: |
+        Automated image update
+        
+        Images:
+        {{ range .Updated.Images -}}
+        - {{.}}
+        {{ end }}
+        
+        [skip ci]
+    push:
+      branch: main
+  policy:
+    semver:
+      range: '>=1.0.0'
+---
+apiVersion: notification.toolkit.fluxcd.io/v1beta3
+kind: Provider
+metadata:
+  name: slack
+  namespace: flux-system
+spec:
+  type: slack
+  channel: deployments
+  secretRef:
+    name: slack-webhook
+---
+apiVersion: notification.toolkit.fluxcd.io/v1beta3
+kind: Alert
+metadata:
+  name: hsk-platform
+  namespace: flux-system
+spec:
+  providerRef:
+    name: slack
+  eventSeverity: info
+  eventSources:
+  - kind: Kustomization
+    name: hsk-platform
+  - kind: GitRepository
+    name: hsk-platform
+  - kind: ImageRepository
+    name: hs-verifier
+  exclusionList:
+  - ".*succeeded.*"
+---
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: hs-verifier
+  namespace: hsk-verifier
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hs-verifier
+  service:
+    port: 8080
+  analysis:
+    interval: 1m
+    threshold: 5
+    maxWeight: 50
+    stepWeight: 10
+    metrics:
+    - name: request-success-rate
+      thresholdRange:
+        min: 99
+      interval: 1m
+    - name: request-duration
+      thresholdRange:
+        max: 500
+      interval: 1m
+    webhooks:
+    - name: load-test
+      type: pre-rollout
+      url: http://flagger-loadtester.test/
+      timeout: 30s
+      metadata:
+        cmd: "hey -z 1m -q 10 -c 2 http://hs-verifier-canary:8080/"
+    - name: conformance-test
+      type: pre-rollout
+      url: http://flagger-loadtester.test/
+      timeout: 30s
+      metadata:
+        type: bash
+        cmd: "curl -sf http://hs-verifier-canary:8080/health"
+    - name: promotion-gate
+      type: confirm-promotion
+      url: http://flagger-loadtester.test/gate/check
+      timeout: 10s
+    - name: rollback
+      type: rollback
+      url: http://flagger-loadtester.test/rollback
+      timeout: 10s
+  autoscalerRef:
+    apiVersion: autoscaling/v2
+    kind: HorizontalPodAutoscaler
+    name: hs-verifier
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feature-flags
+  namespace: hsk-verifier
+data:
+  flags.yaml: |
+    # Feature Flags Configuration
+    
+    flags:
+      - name: new_verifier_ui
+        description: "Enable new verifier UI"
+        default: false
+        
+        rules:
+          - name: beta_users
+            condition: "user.email ends_with '@hskernel.io'"
+            value: true
+          
+          - name: gradual_rollout
+            condition: "user.id % 100 < 10"
+            value: true
+      
+      - name: advanced_analytics
+        description: "Enable advanced analytics features"
+        default: false
+        
+        rules:
+          - name: enterprise_customers
+            condition: "user.plan == 'enterprise'"
+            value: true
+      
+      - name: webauthn_login
+        description: "Enable WebAuthn for login"
+        default: true
+      
+      - name: zk_proofs
+        description: "Enable zero-knowledge proofs"
+        default: false
+        
+        rules:
+          - name: beta_program
+            condition: "user.beta == true"
+            value: true
+    
+    storage:
+      type: redis
+      ttl: 60s
+    
+    evaluation:
+      mode: realtime
+      cache: true

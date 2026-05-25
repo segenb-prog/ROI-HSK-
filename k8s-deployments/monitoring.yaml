@@ -1,0 +1,178 @@
+apiVersion: v1
+kind: ServiceMonitor
+metadata:
+  name: hs-verifier-metrics
+  namespace: hsk-verifier
+  labels:
+    app: hs-verifier
+spec:
+  selector:
+    matchLabels:
+      app: hs-verifier
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: v1
+kind: ServiceMonitor
+metadata:
+  name: transparency-log-metrics
+  namespace: hsk-verifier
+  labels:
+    app: transparency-log
+spec:
+  selector:
+    matchLabels:
+      app: transparency-log
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: hsk-alerts
+  namespace: hsk-verifier
+spec:
+  groups:
+    - name: hsk-verifier
+      rules:
+        - alert: HSKVerifierDown
+          expr: up{job="hs-verifier"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "HSK Verifier is down"
+            description: "HSK Verifier has been down for more than 5 minutes"
+        
+        - alert: HSKVerifierHighErrorRate
+          expr: rate(http_requests_total{job="hs-verifier",status=~"5.."}[5m]) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "HSK Verifier high error rate"
+            description: "Error rate is above 10% for 5 minutes"
+        
+        - alert: HSKViolationDetected
+          expr: increase(hsk_violations_total[1h]) > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: "HSK violation detected"
+            description: "A system has violated HSK compliance"
+        
+        - alert: TransparencyLogOutOfSync
+          expr: transparency_log_merkle_root_mismatch > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Transparency logs out of sync"
+            description: "Log servers have different merkle roots"
+        
+        - alert: TransparencyLogHighLatency
+          expr: histogram_quantile(0.95, rate(transparency_log_request_duration_seconds_bucket[5m])) > 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Transparency log high latency"
+            description: "95th percentile latency is above 1 second"
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: hsk-verifier-dashboard
+  namespace: hsk-verifier
+spec:
+  json: |
+    {
+      "dashboard": {
+        "title": "HSK Verifier",
+        "panels": [
+          {
+            "title": "Verification Requests",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "sum(rate(hsk_verification_requests_total[5m]))"
+              }
+            ]
+          },
+          {
+            "title": "Compliance Rate",
+            "type": "gauge",
+            "targets": [
+              {
+                "expr": "sum(hsk_compliant_total) / sum(hsk_verification_requests_total)"
+              }
+            ]
+          },
+          {
+            "title": "Violations by System",
+            "type": "table",
+            "targets": [
+              {
+                "expr": "sum by (system_id) (hsk_violations_total)"
+              }
+            ]
+          },
+          {
+            "title": "Transparency Log Entries",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "transparency_log_entries_total"
+              }
+            ]
+          }
+        ]
+      }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-hsk
+  namespace: hsk-verifier
+  labels:
+    grafana_dashboard: "1"
+data:
+  hsk-dashboard.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "HSK Falsification Machine",
+        "tags": ["hsk", "verifier", "transparency"],
+        "timezone": "utc",
+        "panels": [
+          {
+            "id": 1,
+            "title": "Verification Rate",
+            "type": "stat",
+            "targets": [{"expr": "rate(hsk_verifications_total[5m])"}],
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Compliance Status",
+            "type": "piechart",
+            "targets": [{"expr": "hsk_compliance_status"}],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "Recent Violations",
+            "type": "table",
+            "targets": [{"expr": "hsk_violations"}],
+            "gridPos": {"h": 16, "w": 24, "x": 0, "y": 8}
+          }
+        ],
+        "time": {"from": "now-1h", "to": "now"},
+        "refresh": "30s"
+      }
+    }

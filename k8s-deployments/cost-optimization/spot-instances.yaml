@@ -1,0 +1,146 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hs-verifier-spot
+  namespace: hsk-verifier
+  labels:
+    app: hs-verifier-spot
+    workload-type: spot
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: hs-verifier-spot
+  template:
+    metadata:
+      labels:
+        app: hs-verifier-spot
+        workload-type: spot
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node.kubernetes.io/capacity-type
+                    operator: In
+                    values:
+                      - spot
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - hs-verifier
+                        - hs-verifier-spot
+                topologyKey: kubernetes.io/hostname
+      tolerations:
+        - key: spot
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      containers:
+        - name: verifier
+          image: hskernel/hs-verifier:v0.1.0
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          env:
+            - name: RUST_LOG
+              value: "info"
+            - name: HSK_KEYRING_PATH
+              value: "/etc/hsk/keyring.json"
+            - name: SPOT_INSTANCE
+              value: "true"
+          volumeMounts:
+            - name: keyring
+              mountPath: /etc/hsk
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: keyring
+          secret:
+            secretName: hsk-keyring
+---
+# PriorityClass for spot instances (lower priority for eviction)
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: spot-priority
+value: -10
+preemptionPolicy: Never
+globalDefault: false
+description: "Priority class for spot instances - will be evicted before on-demand"
+---
+# PodDisruptionBudget for spot instances
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: hs-verifier-spot
+  namespace: hsk-verifier
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: hs-verifier-spot
+---
+# Karpenter NodePool for spot instances (AWS EKS)
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: spot-nodepool
+spec:
+  template:
+    spec:
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values: ["t3.medium", "t3.large", "t3.xlarge", "m5.large", "m5.xlarge"]
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values: ["us-east-1a", "us-east-1b", "us-east-1c"]
+      taints:
+        - key: spot
+          value: "true"
+          effect: NoSchedule
+  limits:
+    cpu: 1000
+    memory: 1000Gi
+  disruption:
+    consolidationPolicy: WhenUnderutilized
+    expireAfter: 720h  # 30 days
+---
+# Cluster Autoscaler configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-autoscaler-priority-expander
+  namespace: kube-system
+data:
+  priorities: |-
+    10:
+      - .*spot.*
+    20:
+      - .*on-demand.*

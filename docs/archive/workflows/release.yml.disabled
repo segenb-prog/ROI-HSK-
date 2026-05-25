@@ -1,0 +1,192 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-release:
+    name: Build Release Binaries
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-amd64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            name: linux-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: darwin-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: darwin-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Cache cargo
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: |
+          cd rust-hs-verifier
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Strip binary
+        run: |
+          strip target/${{ matrix.target }}/release/hs-verifier || true
+
+      - name: Create checksum
+        run: |
+          cd target/${{ matrix.target }}/release
+          sha256sum hs-verifier > hs-verifier.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: hs-verifier-${{ matrix.name }}
+          path: |
+            target/${{ matrix.target }}/release/hs-verifier
+            target/${{ matrix.target }}/release/hs-verifier.sha256
+
+  build-docker:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build and push hs-verifier
+        uses: docker/build-push-action@v5
+        with:
+          context: ./rust-hs-verifier
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            hskernel/hs-verifier:${{ steps.version.outputs.VERSION }}
+            hskernel/hs-verifier:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push did-server
+        uses: docker/build-push-action@v5
+        with:
+          context: ./prototype-digital-identity
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            hskernel/did-server:${{ steps.version.outputs.VERSION }}
+            hskernel/did-server:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-release, build-docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            hs-verifier-*/hs-verifier
+            hs-verifier-*/hs-verifier.sha256
+          body: |
+            ## HSK Falsification Machine ${{ github.ref_name }}
+
+            ### Binaries
+            - Linux AMD64
+            - Linux ARM64
+            - macOS AMD64
+            - macOS ARM64 (Apple Silicon)
+
+            ### Docker Images
+            - `hskernel/hs-verifier:${{ github.ref_name }}`
+            - `hskernel/did-server:${{ github.ref_name }}`
+
+            ### Verification
+            ```bash
+            sha256sum -c hs-verifier.sha256
+            ```
+
+            ### Installation
+            ```bash
+            # Download and verify
+curl -LO https://github.com/hskernel/hs-verifier/releases/download/${{ github.ref_name }}/hs-verifier-linux-amd64
+            sha256sum -c hs-verifier-linux-amd64.sha256
+
+            # Install
+            chmod +x hs-verifier-linux-amd64
+            sudo mv hs-verifier-linux-amd64 /usr/local/bin/hs-verifier
+            ```
+          draft: false
+          prerelease: ${{ contains(github.ref, 'rc') || contains(github.ref, 'beta') }}
+
+  update-helm:
+    name: Update Helm Chart
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Chart.yaml
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          sed -i "s/version: .*/version: $VERSION/" charts/hs-verifier/Chart.yaml
+          sed -i "s/appVersion: .*/appVersion: \"$VERSION\"/" charts/hs-verifier/Chart.yaml
+
+      - name: Commit changes
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add charts/hs-verifier/Chart.yaml
+          git commit -m "Update Helm chart to $VERSION"
+          git push

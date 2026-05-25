@@ -1,0 +1,156 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle rectangle
+skinparam linetype ortho
+skinparam packageStyle rectangle
+
+title RI-0 Human Sovereignty Kernel - System Architecture
+
+' === ACTORS ===
+actor "Citizen" as Citizen #LightCoral
+actor "Enterprise" as Enterprise #LightCoral
+actor "Government" as Gov #LightCoral
+actor "Auditor" as Auditor #LightGreen
+
+' === LAYER 1: USER INTERFACE ===
+package "User Interface Layer" #LightBlue {
+    [Web Portal] as WebPortal
+    [Mobile App] as MobileApp
+    [API Gateway] as APIGateway
+}
+
+' === LAYER 2: DIGITAL IDENTITY ===
+package "Digital Identity + Consent Ledger" #LightYellow {
+    [DID Server] as DIDServer
+    database "PostgreSQL\nconsent_ledger" as ConsentDB #LightGray
+    
+    package "Consent Management" #White {
+        [Citizen Registration] as CitizenReg
+        [Consent Grant/Revoke] as ConsentMgr
+        [Hash Chain Verification] as HashVerify
+    }
+}
+
+' === LAYER 3: CRYPTOGRAPHIC VERIFICATION ===
+package "Cryptographic Verification Layer (HSK)" #LightGreen {
+    
+    package "4 Verifiers" #White {
+        [ConsentLedger\nVerifier] as ConsentVerifier #LightGreen
+        [MemoryPassport\nVerifier] as PassportVerifier #LightGreen
+        [DeletionProof\nVerifier] as DeletionVerifier #LightGreen
+        [PredictionScope\nVerifier] as PredictionVerifier #LightGreen
+    }
+    
+    [Integrated Verifier\nPipeline] as IntegratedVerifier #LightGreen
+}
+
+' === LAYER 4: FALSIFICATION MACHINE ===
+package "Falsification Machine (HSK Verifier)" #LightPink {
+    [HSK CLI] as HSKCLI
+    [HTTP Server] as HSKServer
+    
+    package "Core Modules" #White {
+        [Challenge Module] as ChallengeMod
+        [Evaluate Module] as EvaluateMod
+        [Certificate Module] as CertMod
+        [Issuer Module] as IssuerMod
+        [Adapter Module] as AdapterMod
+    }
+}
+
+' === LAYER 5: TRANSPARENCY LOGS ===
+package "Transparency Log Infrastructure" #LightCyan {
+    
+    package "Log Servers" #White {
+        [Log Server 1] as Log1
+        [Log Server 2] as Log2
+        [Log Server 3] as Log3
+    }
+    
+    [Gossip Protocol] as Gossip
+    database "PostgreSQL\ntransparency" as TransparencyDB #LightGray
+}
+
+' === LAYER 6: MONITORING ===
+package "Observability" #LightGray {
+    [Prometheus] as Prometheus
+    [Grafana] as Grafana
+    [Alertmanager] as Alertmanager
+}
+
+' === AI SYSTEMS ===
+package "AI Systems Under Verification" #MistyRose {
+    [AI System A] as AISystemA
+    [AI System B] as AISystemB
+    [AI System C] as AISystemC
+}
+
+' === CONNECTIONS ===
+
+' User to UI
+Citizen --> WebPortal
+Citizen --> MobileApp
+Enterprise --> APIGateway
+Gov --> APIGateway
+Auditor --> WebPortal
+
+' UI to Digital Identity
+WebPortal --> DIDServer
+MobileApp --> DIDServer
+APIGateway --> DIDServer
+
+' Digital Identity to Database
+DIDServer --> ConsentDB
+
+' Digital Identity to HSK Proofs
+DIDServer ..> HSKServer : HSK Proofs
+
+' HSK Verifier internal
+HSKCLI --> HSKServer
+HSKServer --> ChallengeMod
+HSKServer --> EvaluateMod
+HSKServer --> CertMod
+HSKServer --> IssuerMod
+HSKServer --> AdapterMod
+
+' Verifiers
+EvaluateMod --> ConsentVerifier
+EvaluateMod --> PassportVerifier
+EvaluateMod --> DeletionVerifier
+EvaluateMod --> PredictionVerifier
+
+ConsentVerifier --> IntegratedVerifier
+PassportVerifier --> IntegratedVerifier
+DeletionVerifier --> IntegratedVerifier
+PredictionVerifier --> IntegratedVerifier
+
+' AI Systems interaction
+HSKCLI --> AISystemA : Challenge
+HSKCLI --> AISystemB : Challenge
+HSKCLI --> AISystemC : Challenge
+
+AISystemA --> HSKServer : Response
+AISystemB --> HSKServer : Response
+AISystemC --> HSKServer : Response
+
+' Transparency Logs
+HSKServer --> Log1 : Submit Certificate
+Log1 <--> Gossip
+Log2 <--> Gossip
+Log3 <--> Gossip
+Gossip --> TransparencyDB
+
+' Monitoring
+HSKServer --> Prometheus
+DIDServer --> Prometheus
+Log1 --> Prometheus
+Prometheus --> Grafana
+Prometheus --> Alertmanager
+
+' Public Verification
+Auditor ..> Log1 : Verify Certificate
+Auditor ..> Log2 : Verify Certificate
+Auditor ..> Log3 : Verify Certificate
+
+@enduml

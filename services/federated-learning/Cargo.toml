@@ -1,0 +1,20 @@
+[package]
+name = "hsk-federated-learning"
+version = "1.0.0"
+edition = "2021"
+authors = ["HSK Team <team@hsk.platform>"]
+description = "On-device federated learning with TEE-based consent verification"
+license = "AGPL-3.0"
+
+[dependencies]
+burn = { version = "0.12", features = ["wgpu", "autodiff"] }
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
+rand = "0.8"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "fl_benchmarks"
+harness = false

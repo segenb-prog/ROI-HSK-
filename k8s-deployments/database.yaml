@@ -1,0 +1,196 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: transparency-db
+  namespace: hsk-verifier
+  labels:
+    app: transparency-db
+    app.kubernetes.io/name: transparency-db
+    app.kubernetes.io/component: database
+spec:
+  serviceName: transparency-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app: transparency-db
+  template:
+    metadata:
+      labels:
+        app: transparency-db
+        app.kubernetes.io/name: transparency-db
+        app.kubernetes.io/component: database
+    spec:
+      serviceAccountName: transparency-db
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: transparency-db-credentials
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: transparency-db-credentials
+                  key: password
+            - name: POSTGRES_DB
+              value: transparency
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - postgres
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - postgres
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: fast-ssd
+        resources:
+          requests:
+            storage: 500Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: transparency-db
+  namespace: hsk-verifier
+  labels:
+    app: transparency-db
+    app.kubernetes.io/name: transparency-db
+    app.kubernetes.io/component: database
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: postgres
+      protocol: TCP
+      name: postgres
+  selector:
+    app: transparency-db
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: transparency-db
+  namespace: hsk-verifier
+  labels:
+    app.kubernetes.io/name: transparency-db
+    app.kubernetes.io/component: database
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: transparency-db-credentials
+  namespace: hsk-verifier
+type: Opaque
+stringData:
+  username: "transparency"
+  password: "CHANGE_ME_IN_PRODUCTION"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: transparency-db-init
+  namespace: hsk-verifier
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: init
+          image: postgres:15-alpine
+          command:
+            - sh
+            - -c
+            - |
+              psql $DATABASE_URL << 'EOF'
+              CREATE TABLE IF NOT EXISTS certificates (
+                id SERIAL PRIMARY KEY,
+                certificate_id VARCHAR(64) UNIQUE NOT NULL,
+                system_id VARCHAR(255) NOT NULL,
+                timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                compliant BOOLEAN NOT NULL,
+                violations JSONB,
+                certificate JSONB NOT NULL,
+                merkle_root VARCHAR(64) NOT NULL,
+                merkle_proof JSONB,
+                previous_hash VARCHAR(64) NOT NULL
+              );
+              
+              CREATE INDEX idx_certificates_system_id ON certificates(system_id);
+              CREATE INDEX idx_certificates_timestamp ON certificates(timestamp);
+              CREATE INDEX idx_certificates_compliant ON certificates(compliant);
+              
+              CREATE TABLE IF NOT EXISTS log_heads (
+                id SERIAL PRIMARY KEY,
+                server_id VARCHAR(255) NOT NULL,
+                head_hash VARCHAR(64) NOT NULL,
+                timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                signature VARCHAR(255) NOT NULL
+              );
+              
+              CREATE INDEX idx_log_heads_server_id ON log_heads(server_id);
+              
+              CREATE TABLE IF NOT EXISTS merkle_nodes (
+                id SERIAL PRIMARY KEY,
+                level INTEGER NOT NULL,
+                position BIGINT NOT NULL,
+                hash VARCHAR(64) NOT NULL,
+                leaf_data JSONB,
+                UNIQUE(level, position)
+              );
+              
+              CREATE INDEX idx_merkle_nodes_level ON merkle_nodes(level);
+              CREATE INDEX idx_merkle_nodes_position ON merkle_nodes(position);
+              EOF
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: transparency-db
+                  key: url

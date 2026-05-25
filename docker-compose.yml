@@ -1,0 +1,15 @@
+services:
+  hsk-api:
+    build: .
+    ports:
+      - '8000:8000'
+    environment:
+      HSK_DB_PATH: /app/data/hsk.db
+      HSK_SYSTEM_KEY_PATH: /app/data/system_key.pem
+    volumes:
+      - ./services/hsk_api/data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

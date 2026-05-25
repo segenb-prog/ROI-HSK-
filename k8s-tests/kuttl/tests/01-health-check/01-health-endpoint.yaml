@@ -1,0 +1,26 @@
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+metadata:
+  name: test-health-endpoints
+commands:
+  - script: |
+      #!/bin/bash
+      set -e
+      
+      # Test verifier health endpoint
+      VERIFIER_POD=$(kubectl get pod -n hsk-verifier-test -l app=hs-verifier -o jsonpath='{.items[0].metadata.name}')
+      kubectl exec -n hsk-verifier-test $VERIFIER_POD -- curl -sf http://localhost:8080/health | jq -e '.status == "healthy"'
+      
+      echo "✓ Verifier health check passed"
+      
+      # Test transparency log health endpoint
+      LOG_POD=$(kubectl get pod -n hsk-verifier-test -l app=transparency-log -o jsonpath='{.items[0].metadata.name}')
+      kubectl exec -n hsk-verifier-test $LOG_POD -- curl -sf http://localhost:8080/health | jq -e '.status == "healthy"'
+      
+      echo "✓ Transparency log health check passed"
+      
+      # Test database connectivity
+      DB_POD=$(kubectl get pod -n hsk-verifier-test -l app=transparency-db -o jsonpath='{.items[0].metadata.name}')
+      kubectl exec -n hsk-verifier-test $DB_POD -- pg_isready -U transparency
+      
+      echo "✓ Database health check passed"

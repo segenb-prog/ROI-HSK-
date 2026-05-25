@@ -1,0 +1,208 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vault
+  namespace: vault
+  labels:
+    app: vault
+spec:
+  serviceName: vault
+  replicas: 3
+  selector:
+    matchLabels:
+      app: vault
+  template:
+    metadata:
+      labels:
+        app: vault
+    spec:
+      serviceAccountName: vault
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 100
+        runAsGroup: 1000
+      containers:
+      - name: vault
+        image: hashicorp/vault:1.15.0
+        args:
+        - server
+        - -config=/vault/config/vault.hcl
+        ports:
+        - containerPort: 8200
+          name: api
+        - containerPort: 8201
+          name: cluster
+        env:
+        - name: VAULT_ADDR
+          value: "http://127.0.0.1:8200"
+        - name: VAULT_CLUSTER_ADDR
+          value: "https://$(POD_IP):8201"
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: VAULT_SEAL_TYPE
+          value: "awskms"
+        - name: VAULT_AWSKMS_SEAL_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: vault-aws-kms
+              key: kms-key-id
+        - name: AWS_REGION
+          value: "us-east-1"
+        volumeMounts:
+        - name: config
+          mountPath: /vault/config
+        - name: data
+          mountPath: /vault/data
+        - name: tls
+          mountPath: /vault/tls
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /v1/sys/health?standbyok=true
+            port: 8200
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200
+            port: 8200
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: vault-config
+      - name: tls
+        secret:
+          secretName: vault-tls
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: gp3-encrypted
+      resources:
+        requests:
+          storage: 50Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-config
+  namespace: vault
+data:
+  vault.hcl: |
+    storage "raft" {
+      path = "/vault/data"
+      node_id = "${HOSTNAME}"
+      retry_leader_election = true
+      
+      autopilot {
+        cleanup_dead_servers = true
+        last_contact_threshold = "10s"
+        max_trailing_logs = 250
+        min_quorum = 2
+        server_stabilization_time = "10s"
+      }
+    }
+    
+    listener "tcp" {
+      address = "0.0.0.0:8200"
+      tls_cert_file = "/vault/tls/tls.crt"
+      tls_key_file = "/vault/tls/tls.key"
+      tls_min_version = "tls13"
+      
+      telemetry {
+        unauthenticated_metrics_access = false
+      }
+    }
+    
+    seal "awskms" {
+      region = "us-east-1"
+      kms_key_id = "${VAULT_AWSKMS_SEAL_KEY_ID}"
+    }
+    
+    telemetry {
+      prometheus_retention_time = "30s"
+      disable_hostname = true
+    }
+    
+    api_addr = "https://vault.vault.svc.cluster.local:8200"
+    cluster_addr = "https://$(POD_IP):8201"
+    cluster_name = "hsk-vault"
+    ui = true
+    log_level = "Info"
+    log_format = "json"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  namespace: vault
+  labels:
+    app: vault
+spec:
+  selector:
+    app: vault
+  ports:
+  - name: api
+    port: 8200
+    targetPort: 8200
+  - name: cluster
+    port: 8201
+    targetPort: 8201
+  clusterIP: None
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-active
+  namespace: vault
+  labels:
+    app: vault
+spec:
+  selector:
+    app: vault
+    vault-active: "true"
+  ports:
+  - name: api
+    port: 8200
+    targetPort: 8200
+  publishNotReadyAddresses: false
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vault
+  namespace: vault
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - vault.hskernel.io
+    secretName: vault-tls
+  rules:
+  - host: vault.hskernel.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: vault-active
+            port:
+              number: 8200

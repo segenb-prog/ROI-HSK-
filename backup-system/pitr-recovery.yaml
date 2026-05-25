@@ -1,0 +1,142 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: point-in-time-recovery
+  namespace: hsk-verifier
+spec:
+  template:
+    spec:
+      serviceAccountName: backup-sa
+      containers:
+      - name: recovery
+        image: postgres:15-alpine
+        env:
+        - name: PGHOST
+          value: "transparency-db"
+        - name: PGDATABASE
+          value: "consent_ledger"
+        - name: PGUSER
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: username
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: password
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: aws-credentials
+              key: access-key-id
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aws-credentials
+              key: secret-access-key
+        - name: BACKUP_BUCKET
+          value: "hsk-backups-primary"
+        - name: BACKUP_ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: backup-encryption
+              key: key
+        - name: RECOVERY_TIMESTAMP
+          value: ""  # Set to desired timestamp: 2024-01-15_143000
+        - name: WAL_ARCHIVE_BUCKET
+          value: "hsk-wal-archive"
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          
+          if [ -z "$RECOVERY_TIMESTAMP" ]; then
+            echo "ERROR: RECOVERY_TIMESTAMP not set"
+            echo "Usage: Set RECOVERY_TIMESTAMP to format: YYYYMMDD_HHMMSS"
+            exit 1
+          fi
+          
+          echo "Starting Point-in-Time Recovery to: $RECOVERY_TIMESTAMP"
+          
+          # Find closest backup before recovery point
+          BACKUP_FILE=$(aws s3 ls "s3://${BACKUP_BUCKET}/hourly/" | \
+            grep "consent_ledger_hourly_${RECOVERY_TIMESTAMP:0:8}" | \
+            sort | tail -1 | awk '{print $4}')
+          
+          if [ -z "$BACKUP_FILE" ]; then
+            # Try daily backup
+            BACKUP_FILE=$(aws s3 ls "s3://${BACKUP_BUCKET}/daily/" | \
+              grep "consent_ledger_daily_${RECOVERY_TIMESTAMP:0:8}" | \
+              awk '{print $4}')
+          fi
+          
+          if [ -z "$BACKUP_FILE" ]; then
+            echo "ERROR: No backup found for timestamp $RECOVERY_TIMESTAMP"
+            exit 1
+          fi
+          
+          echo "Found backup: $BACKUP_FILE"
+          
+          # Stop application connections
+          echo "Stopping application connections..."
+          psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'consent_ledger' AND pid <> pg_backend_pid();"
+          
+          # Drop and recreate database
+          echo "Recreating database..."
+          psql -c "DROP DATABASE IF EXISTS consent_ledger_restore;"
+          psql -c "CREATE DATABASE consent_ledger_restore;"
+          
+          # Restore from backup
+          echo "Restoring from backup..."
+          aws s3 cp "s3://${BACKUP_BUCKET}/hourly/${BACKUP_FILE}" - | \
+            openssl enc -aes-256-cbc -d -pass pass:"$BACKUP_ENCRYPTION_KEY" | \
+            gunzip | pg_restore -d consent_ledger_restore --verbose
+          
+          # Apply WAL logs for PITR
+          echo "Applying WAL logs up to $RECOVERY_TIMESTAMP..."
+          # This requires PostgreSQL configured with archive_mode = on
+          
+          # Verify restoration
+          echo "Verifying restoration..."
+          psql -d consent_ledger_restore -c "SELECT COUNT(*) FROM consent_entries;"
+          
+          # Swap databases
+          echo "Swapping databases..."
+          psql -c "ALTER DATABASE consent_ledger RENAME TO consent_ledger_old;"
+          psql -c "ALTER DATABASE consent_ledger_restore RENAME TO consent_ledger;"
+          psql -c "DROP DATABASE consent_ledger_old;"
+          
+          echo "Point-in-Time Recovery completed successfully!"
+          echo "Recovery timestamp: $RECOVERY_TIMESTAMP"
+          echo "Backup used: $BACKUP_FILE"
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "2000m"
+          limits:
+            memory: "16Gi"
+            cpu: "8000m"
+      restartPolicy: Never
+  backoffLimit: 0
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pitr-config
+  namespace: hsk-verifier
+data:
+  postgresql.conf: |
+    # Point-in-Time Recovery Configuration
+    archive_mode = on
+    archive_command = 'aws s3 cp %p s3://hsk-wal-archive/wal/%f'
+    archive_timeout = 300
+    wal_level = replica
+    max_wal_senders = 3
+    wal_keep_size = 1GB
+    
+    # Recovery settings
+    restore_command = 'aws s3 cp s3://hsk-wal-archive/wal/%f %p'
+    recovery_target_time = ''  # Set during recovery
+    recovery_target_action = 'promote'

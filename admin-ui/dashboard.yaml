@@ -1,0 +1,160 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-dashboard
+  namespace: hsk-verifier
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: admin-dashboard
+  template:
+    metadata:
+      labels:
+        app: admin-dashboard
+    spec:
+      containers:
+      - name: dashboard
+        image: hskernel/admin-dashboard:latest
+        ports:
+        - containerPort: 3000
+        env:
+        - name: REACT_APP_API_URL
+          value: "https://api.hskernel.io"
+        - name: REACT_APP_AUTH_URL
+          value: "https://auth.hskernel.io"
+        - name: REACT_APP_GRAFANA_URL
+          value: "https://grafana.hskernel.io"
+        - name: REACT_APP_ENV
+          value: "production"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "1000m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-dashboard
+  namespace: hsk-verifier
+spec:
+  selector:
+    app: admin-dashboard
+  ports:
+  - port: 3000
+    targetPort: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: admin-dashboard-ingress
+  namespace: hsk-verifier
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - admin.hskernel.io
+    secretName: admin-tls
+  rules:
+  - host: admin.hskernel.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: admin-dashboard
+            port:
+              number: 3000
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: admin-dashboard-config
+  namespace: hsk-verifier
+data:
+  config.json: |
+    {
+      "app": {
+        "name": "HSK Admin Dashboard",
+        "version": "1.0.0",
+        "environment": "production"
+      },
+      "features": {
+        "consentManagement": true,
+        "userManagement": true,
+        "systemHealth": true,
+        "auditLogs": true,
+        "gdprRequests": true,
+        "certificateManagement": true,
+        "webhookManagement": true,
+        "rateLimitConfig": true
+      },
+      "navigation": [
+        {
+          "name": "Dashboard",
+          "path": "/",
+          "icon": "dashboard",
+          "roles": ["admin", "operator", "viewer"]
+        },
+        {
+          "name": "Consent Management",
+          "path": "/consents",
+          "icon": "consent",
+          "roles": ["admin", "operator"]
+        },
+        {
+          "name": "User Management",
+          "path": "/users",
+          "icon": "users",
+          "roles": ["admin"]
+        },
+        {
+          "name": "System Health",
+          "path": "/health",
+          "icon": "health",
+          "roles": ["admin", "operator", "viewer"]
+        },
+        {
+          "name": "Audit Logs",
+          "path": "/audit",
+          "icon": "audit",
+          "roles": ["admin", "operator"]
+        },
+        {
+          "name": "GDPR Requests",
+          "path": "/gdpr",
+          "icon": "gdpr",
+          "roles": ["admin", "compliance"]
+        },
+        {
+          "name": "Certificates",
+          "path": "/certificates",
+          "icon": "certificate",
+          "roles": ["admin"]
+        },
+        {
+          "name": "Webhooks",
+          "path": "/webhooks",
+          "icon": "webhook",
+          "roles": ["admin", "operator"]
+        },
+        {
+          "name": "Rate Limits",
+          "path": "/rate-limits",
+          "icon": "speed",
+          "roles": ["admin"]
+        },
+        {
+          "name": "Settings",
+          "path": "/settings",
+          "icon": "settings",
+          "roles": ["admin"]
+        }
+      ]
+    }

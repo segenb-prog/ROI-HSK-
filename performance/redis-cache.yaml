@@ -1,0 +1,207 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-cache
+  namespace: hsk-verifier
+spec:
+  serviceName: redis-cache
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis-cache
+  template:
+    metadata:
+      labels:
+        app: redis-cache
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+        command:
+        - redis-server
+        - --appendonly
+        - "yes"
+        - --maxmemory
+        - "2gb"
+        - --maxmemory-policy
+        - "allkeys-lru"
+        - --cluster-enabled
+        - "yes"
+        - --cluster-require-full-coverage
+        - "no"
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        volumeMounts:
+        - name: data
+          mountPath: /data
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: gp3-encrypted
+      resources:
+        requests:
+          storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cache
+  namespace: hsk-verifier
+spec:
+  selector:
+    app: redis-cache
+  ports:
+  - port: 6379
+    targetPort: 6379
+  clusterIP: None
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-cache-config
+  namespace: hsk-verifier
+data:
+  cache-policies.yaml: |
+    # Redis Cache Configuration
+    
+    caching:
+      # Cache tiers
+      tiers:
+        l1:
+          type: local
+          max_size: 1000
+          ttl: 60s
+        
+        l2:
+          type: redis
+          ttl: 300s
+        
+        l3:
+          type: database
+      
+      # Cache strategies
+      strategies:
+        # Consent lookups
+        consent_lookup:
+          key_pattern: "consent:{did}:{purpose}"
+          ttl: 300s
+          invalidate_on:
+            - consent.granted
+            - consent.revoked
+          
+        # Certificate cache
+        certificate_cache:
+          key_pattern: "cert:{id}"
+          ttl: 3600s
+          invalidate_on:
+            - certificate.issued
+            - certificate.revoked
+          
+        # Transparency log cache
+        transparency_cache:
+          key_pattern: "transparency:{root_hash}"
+          ttl: 86400s  # 24 hours
+          invalidate_on: []
+          
+        # Rate limit counters
+        rate_limit:
+          key_pattern: "ratelimit:{key}"
+          ttl: 60s
+          invalidate_on: []
+        
+        # Session cache
+        session_cache:
+          key_pattern: "session:{token}"
+          ttl: 1800s  # 30 minutes
+          invalidate_on:
+            - session.logout
+            - session.expired
+        
+        # API response cache
+        api_cache:
+          key_pattern: "api:{endpoint}:{params_hash}"
+          ttl: 60s
+          invalidate_on:
+            - data.changed
+      
+      # Cache warming
+      warming:
+        enabled: true
+        
+        schedules:
+          - name: popular_consents
+            query: "SELECT * FROM consent_entries ORDER BY access_count DESC LIMIT 1000"
+            interval: 5m
+          
+          - name: active_certificates
+            query: "SELECT * FROM certificates WHERE status = 'active'"
+            interval: 10m
+      
+      # Cache metrics
+      metrics:
+        enabled: true
+        
+        tracked_metrics:
+          - cache_hit_rate
+          - cache_miss_rate
+          - eviction_rate
+          - memory_usage
+          - key_count
+    
+    # Read replicas
+    read_replicas:
+      enabled: true
+      
+      databases:
+        - name: consent_read_replica
+          host: consent-db-replica
+          port: 5432
+          
+        - name: transparency_read_replica
+          host: transparency-db-replica
+          port: 5432
+      
+      routing:
+        strategy: round_robin
+        
+        rules:
+          - pattern: "SELECT *"
+            target: replica
+          
+          - pattern: "INSERT|UPDATE|DELETE"
+            target: primary
+    
+    # Connection pooling
+    connection_pool:
+      enabled: true
+      
+      pools:
+        - name: primary
+          min_connections: 5
+          max_connections: 50
+          idle_timeout: 300s
+          
+        - name: replica
+          min_connections: 10
+          max_connections: 100
+          idle_timeout: 300s
+    
+    # Request coalescing
+    coalescing:
+      enabled: true
+      
+      rules:
+        - pattern: "/consent/verify/*"
+          window: 100ms
+          
+        - pattern: "/certificate/*"
+          window: 50ms

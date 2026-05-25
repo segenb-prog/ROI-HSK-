@@ -1,0 +1,84 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  pr-title-check:
+    name: PR Title Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check PR title
+        uses: amannn/action-semantic-pull-request@v5
+        with:
+          types: |
+            feat
+            fix
+            docs
+            style
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            revert
+            security
+          scopes: |
+            api
+            consent
+            identity
+            crypto
+            k8s
+            monitoring
+            docs
+            deps
+          requireScope: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  code-review:
+    name: Automated Code Review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Run reviewdog
+        uses: reviewdog/action-setup@v1
+      
+      - name: Run Rust review
+        run: |
+          cargo install cargo-review
+          cargo review --format=checkstyle | reviewdog -f=checkstyle -name="Rust Review" -reporter=github-pr-review
+        working-directory: ./services
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v3
+        with:
+          fail-on-severity: high
+          allow-licenses: MIT, Apache-2.0, BSD-3-Clause, ISC
+
+  size-check:
+    name: Size Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check bundle size
+        uses: preactjs/compressed-size-action@v2
+        with:
+          pattern: "./services/target/release/hsk-*"
+          strip-hash: "\\b\\.wasm\\.js$"

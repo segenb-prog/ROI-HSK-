@@ -1,0 +1,218 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: global-load-balancer-config
+  namespace: hsk-verifier
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /var/run/nginx.pid;
+    
+    events {
+        worker_connections 1024;
+    }
+    
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+        
+        # GeoIP database for region routing
+        geoip_country /usr/share/GeoIP/GeoIP.dat;
+        
+        # Map regions to upstreams
+        map $geoip_country_code $backend_region {
+            default us-east;
+            EU eu-west;
+            GB eu-west;
+            DE eu-west;
+            FR eu-west;
+            US us-east;
+            CA us-east;
+            JP ap-northeast;
+            SG ap-southeast;
+            AU ap-southeast;
+        }
+        
+        # Health check upstream
+        upstream us-east {
+            server api-us-east.hskernel.io:443 weight=100;
+            keepalive 32;
+        }
+        
+        upstream eu-west {
+            server api-eu-west.hskernel.io:443 weight=100;
+            keepalive 32;
+        }
+        
+        upstream ap-northeast {
+            server api-ap-northeast.hskernel.io:443 weight=100;
+            keepalive 32;
+        }
+        
+        upstream ap-southeast {
+            server api-ap-southeast.hskernel.io:443 weight=100;
+            keepalive 32;
+        }
+        
+        # Rate limiting zones
+        limit_req_zone $binary_remote_addr zone=api:10m rate=100r/s;
+        limit_req_zone $binary_remote_addr zone=challenge:10m rate=10r/s;
+        limit_conn_zone $binary_remote_addr zone=conn:10m;
+        
+        # Logging format with region
+        log_format region_log '$remote_addr - $remote_user [$time_local] '
+                             '"$request" $status $body_bytes_sent '
+                             '"$http_referer" "$http_user_agent" '
+                             'region=$backend_region '
+                             'upstream=$upstream_addr '
+                             'response_time=$upstream_response_time';
+        
+        server {
+            listen 80;
+            server_name _;
+            return 301 https://$host$request_uri;
+        }
+        
+        server {
+            listen 443 ssl http2;
+            server_name api.hskernel.io;
+            
+            ssl_certificate /etc/nginx/ssl/tls.crt;
+            ssl_certificate_key /etc/nginx/ssl/tls.key;
+            ssl_protocols TLSv1.3;
+            ssl_ciphers TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256;
+            ssl_prefer_server_ciphers off;
+            
+            access_log /var/log/nginx/access.log region_log;
+            
+            # Health check endpoint (bypass region routing)
+            location /health {
+                proxy_pass https://us-east/health;
+                proxy_ssl_verify off;
+                proxy_connect_timeout 5s;
+                proxy_read_timeout 10s;
+            }
+            
+            # Main API routing
+            location / {
+                # Rate limiting
+                limit_req zone=api burst=200 nodelay;
+                limit_conn conn 50;
+                
+                # Dynamic region selection
+                set $target $backend_region;
+                
+                # Override with cookie if present
+                if ($cookie_hsk_region != "") {
+                    set $target $cookie_hsk_region;
+                }
+                
+                # Override with header if present
+                if ($http_x_hsk_region != "") {
+                    set $target $http_x_hsk_region;
+                }
+                
+                proxy_pass https://$target$request_uri;
+                proxy_ssl_verify off;
+                proxy_ssl_server_name on;
+                proxy_ssl_protocols TLSv1.3;
+                
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header X-Region-Route $target;
+                
+                proxy_connect_timeout 5s;
+                proxy_send_timeout 30s;
+                proxy_read_timeout 30s;
+                
+                # Circuit breaker pattern
+                proxy_next_upstream error timeout http_502 http_503 http_504;
+                proxy_next_upstream_tries 2;
+                
+                # Add region cookie for sticky sessions
+                add_header Set-Cookie "hsk_region=$target; Path=/; Secure; HttpOnly; SameSite=Strict" always;
+            }
+            
+            # Challenge endpoint (stricter rate limiting)
+            location /challenge {
+                limit_req zone=challenge burst=20 nodelay;
+                limit_conn conn 10;
+                
+                proxy_pass https://$backend_region/challenge;
+                proxy_ssl_verify off;
+                proxy_ssl_server_name on;
+                
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: global-load-balancer
+  namespace: hsk-verifier
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: global-load-balancer
+  template:
+    metadata:
+      labels:
+        app: global-load-balancer
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        - containerPort: 443
+        volumeMounts:
+        - name: config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        - name: tls
+          mountPath: /etc/nginx/ssl
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: config
+        configMap:
+          name: global-load-balancer-config
+      - name: tls
+        secret:
+          secretName: global-lb-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: global-load-balancer
+  namespace: hsk-verifier
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol: "https"
+spec:
+  type: LoadBalancer
+  selector:
+    app: global-load-balancer
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: https
+    port: 443
+    targetPort: 443

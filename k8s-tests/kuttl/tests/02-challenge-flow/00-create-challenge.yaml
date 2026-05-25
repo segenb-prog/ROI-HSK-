@@ -1,0 +1,30 @@
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+metadata:
+  name: create-challenge
+commands:
+  - script: |
+      #!/bin/bash
+      set -e
+      
+      VERIFIER_POD=$(kubectl get pod -n hsk-verifier-test -l app=hs-verifier -o jsonpath='{.items[0].metadata.name}')
+      
+      # Create a challenge
+      RESPONSE=$(kubectl exec -n hsk-verifier-test $VERIFIER_POD -- \
+        curl -sf -X POST http://localhost:8080/challenge \
+        -H "Content-Type: application/json" \
+        -d '{"system_id": "test-system-kuttl", "timeout_hours": 1}')
+      
+      # Verify response
+      echo "$RESPONSE" | jq -e '.request_id != null'
+      echo "$RESPONSE" | jq -e '.system_id == "test-system-kuttl"'
+      echo "$RESPONSE" | jq -e '.deadline != null'
+      
+      # Save request_id for next test
+      REQUEST_ID=$(echo "$RESPONSE" | jq -r '.request_id')
+      kubectl create configmap kuttl-test-state \
+        --from-literal=request_id="$REQUEST_ID" \
+        --from-literal=system_id="test-system-kuttl" \
+        -n hsk-verifier-test --dry-run=client -o yaml | kubectl apply -f -
+      
+      echo "✓ Challenge created: $REQUEST_ID"

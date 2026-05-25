@@ -1,0 +1,142 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mfa-service
+  namespace: hsk-verifier
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mfa-service
+  template:
+    metadata:
+      labels:
+        app: mfa-service
+    spec:
+      containers:
+      - name: mfa
+        image: hskernel/mfa-service:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: REDIS_URL
+          value: "redis://redis:6379"
+        - name: TOTP_ISSUER
+          value: "HSK Platform"
+        - name: SMS_PROVIDER
+          value: "twilio"
+        - name: TWILIO_ACCOUNT_SID
+          valueFrom:
+            secretKeyRef:
+              name: twilio-credentials
+              key: account-sid
+        - name: TWILIO_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: twilio-credentials
+              key: auth-token
+        - name: TWILIO_PHONE_NUMBER
+          valueFrom:
+            secretKeyRef:
+              name: twilio-credentials
+              key: phone-number
+        - name: EMAIL_PROVIDER
+          value: "sendgrid"
+        - name: SENDGRID_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: sendgrid-credentials
+              key: api-key
+        - name: MFA_CODE_TTL
+          value: "300"  # 5 minutes
+        - name: MFA_MAX_ATTEMPTS
+          value: "3"
+        - name: MFA_LOCKOUT_DURATION
+          value: "900"  # 15 minutes
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mfa-service
+  namespace: hsk-verifier
+spec:
+  selector:
+    app: mfa-service
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mfa-policy
+  namespace: hsk-verifier
+data:
+  policy.yaml: |
+    # MFA Policy Configuration
+    
+    default_policy:
+      require_mfa: true
+      allowed_methods:
+        - totp
+        - sms
+        - email
+        - webauthn
+      backup_codes_count: 10
+    
+    role_policies:
+      admin:
+        require_mfa: true
+        allowed_methods:
+          - webauthn
+          - totp
+        require_backup_codes: true
+        session_duration: 8h
+      
+      operator:
+        require_mfa: true
+        allowed_methods:
+          - totp
+          - sms
+          - webauthn
+        require_backup_codes: true
+        session_duration: 12h
+      
+      viewer:
+        require_mfa: false
+        allowed_methods:
+          - totp
+          - email
+        session_duration: 24h
+    
+    risk_based:
+      enabled: true
+      triggers:
+        new_device:
+          require_mfa: true
+          allowed_methods:
+            - webauthn
+            - totp
+        new_location:
+          require_mfa: true
+          allowed_methods:
+            - totp
+            - sms
+        suspicious_activity:
+          require_mfa: true
+          allowed_methods:
+            - webauthn
+          block_other_methods: true
+    
+    session_management:
+      idle_timeout: 15m
+      max_duration: 8h
+      concurrent_sessions: 3
+      require_reauth_for_sensitive_ops: true

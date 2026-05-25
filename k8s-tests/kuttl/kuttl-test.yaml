@@ -1,0 +1,21 @@
+apiVersion: kuttl.dev/v1beta1
+kind: TestSuite
+metadata:
+  name: hsk-integration-tests
+  namespace: hsk-verifier-test
+testDirs:
+  - ./tests
+namespace: hsk-verifier-test
+parallel: 2
+timeout: 300
+skipDelete: false
+artifactsDir: ./artifacts
+commands:
+  - command: kubectl apply -k ../../k8s-deployments/overlays/staging
+    ignoreFailure: false
+  - command: kubectl wait --for=condition=ready pod -l app=hs-verifier -n hsk-verifier-test --timeout=120s
+    ignoreFailure: false
+  - command: kubectl wait --for=condition=ready pod -l app=transparency-log -n hsk-verifier-test --timeout=120s
+    ignoreFailure: false
+  - command: kubectl wait --for=condition=ready pod -l app=transparency-db -n hsk-verifier-test --timeout=120s
+    ignoreFailure: false

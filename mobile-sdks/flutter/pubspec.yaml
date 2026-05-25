@@ -1,0 +1,54 @@
+name: hsk_sdk
+description: Human Sovereignty Kernel SDK for Flutter - Cryptographic identity and consent management
+version: 1.0.0
+homepage: https://hsk.platform
+repository: https://github.com/hsk-platform/flutter-sdk
+issue_tracker: https://github.com/hsk-platform/flutter-sdk/issues
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: ">=3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # HTTP client
+  http: ^1.1.0
+  
+  # Cryptography
+  ed25519_edwards: ^0.3.1
+  crypto: ^3.0.3
+  
+  # Secure storage
+  flutter_secure_storage: ^9.0.0
+  
+  # Biometric authentication
+  local_auth: ^2.1.8
+  
+  # Device info
+  device_info_plus: ^9.1.0
+  
+  # Platform utilities
+  path_provider: ^2.1.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  mockito: ^5.4.4
+  build_runner: ^2.4.7
+  test: ^1.24.9
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: io.hskernel.flutter
+        pluginClass: HskSdkPlugin
+      ios:
+        pluginClass: HskSdkPlugin
+
+# Platform-specific configuration
+# Android: minSdkVersion 23
+# iOS: minimum version 12.0

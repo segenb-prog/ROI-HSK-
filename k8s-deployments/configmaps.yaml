@@ -1,0 +1,68 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hsk-config
+  namespace: hsk-verifier
+data:
+  empty-state-root: "0000000000000000000000000000000000000000000000000000000000000000"
+  allowed-issuers: "hskernel.gov,digital-identity.gov"
+  verification-timeout: "72"
+  max-cert-age-days: "365"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: transparency-log-config
+  namespace: hsk-verifier
+data:
+  max-entries-per-batch: "1000"
+  merkle-tree-depth: "32"
+  gossip-interval-seconds: "30"
+  sync-timeout-seconds: "10"
+  retention-days: "2555"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hsk-keyring
+  namespace: hsk-verifier
+type: Opaque
+stringData:
+  keyring.json: |
+    {
+      "version": "1.0",
+      "created_at": "2025-01-01T00:00:00Z",
+      "keys": [
+        {
+          "key_id": "key-placeholder",
+          "public_key": "PLACEHOLDER_PUBLIC_KEY",
+          "secret_key": "PLACEHOLDER_SECRET_KEY",
+          "activated_at": "2025-01-01T00:00:00Z",
+          "expires_at": "2026-01-01T00:00:00Z",
+          "revoked_at": null
+        }
+      ],
+      "active_key_index": 0
+    }
+  system.pub: "PLACEHOLDER_SYSTEM_PUBLIC_KEY"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: transparency-log-db
+  namespace: hsk-verifier
+type: Opaque
+stringData:
+  url: "postgresql://user:pass@transparency-db:5432/transparency"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: transparency-signing-key
+  namespace: hsk-verifier
+type: Opaque
+stringData:
+  signing-key.pem: |
+    -----BEGIN PRIVATE KEY-----
+    PLACEHOLDER_SIGNING_KEY
+    -----END PRIVATE KEY-----

@@ -1,0 +1,19 @@
+[package]
+name = "hsk-homomorphic-crypto"
+version = "1.0.0"
+edition = "2021"
+authors = ["HSK Team <team@hsk.platform>"]
+description = "Fully Homomorphic Encryption for privacy-preserving consent verification"
+license = "AGPL-3.0"
+
+[dependencies]
+seal_fhe = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "he_benchmarks"
+harness = false

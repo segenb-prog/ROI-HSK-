@@ -1,0 +1,20 @@
+# Build artifacts
+target/
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store
+
+# Secrets / local state
+.env
+*.key
+*.pem
+system_key.bin
+keyring.json
+reports/*.local.json
+reports/
+services/hsk_api/data/
+
+# Generated archives
+*.zip
+*.tar.gz

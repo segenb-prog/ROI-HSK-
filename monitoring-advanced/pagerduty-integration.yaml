@@ -1,0 +1,144 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pagerduty-config
+  namespace: monitoring
+data:
+  services.yaml: |
+    # PagerDuty Service Configuration
+    
+    services:
+      hsk-platform:
+        name: "HSK Platform"
+        description: "Core HSK Platform Services"
+        escalation_policy: "platform-oncall"
+        auto_resolve_timeout: 14400  # 4 hours
+        acknowledgement_timeout: 1800  # 30 minutes
+        
+        integrations:
+          - name: "Prometheus Alerts"
+            type: events_api_v2
+          
+          - name: "Synthetic Monitoring"
+            type: events_api_v2
+          
+          - name: "Security Alerts"
+            type: events_api_v2
+      
+      hsk-security:
+        name: "HSK Security"
+        description: "Security-related alerts"
+        escalation_policy: "security-oncall"
+        auto_resolve_timeout: 7200  # 2 hours
+        
+        integrations:
+          - name: "Falco Alerts"
+            type: events_api_v2
+          
+          - name: "Vulnerability Scans"
+            type: events_api_v2
+      
+      hsk-compliance:
+        name: "HSK Compliance"
+        description: "Compliance and audit alerts"
+        escalation_policy: "compliance-team"
+        
+        integrations:
+          - name: "GDPR Alerts"
+            type: events_api_v2
+          
+          - name: "Audit Failures"
+            type: events_api_v2
+    
+    escalation_policies:
+      platform-oncall:
+        name: "Platform On-Call"
+        description: "Primary on-call rotation for platform issues"
+        
+        escalation_rules:
+          - escalation_delay_in_minutes: 0
+            targets:
+              - type: schedule
+                id: platform-primary
+          
+          - escalation_delay_in_minutes: 15
+            targets:
+              - type: schedule
+                id: platform-secondary
+          
+          - escalation_delay_in_minutes: 30
+            targets:
+              - type: user
+                id: platform-manager
+      
+      security-oncall:
+        name: "Security On-Call"
+        description: "Security incident response"
+        
+        escalation_rules:
+          - escalation_delay_in_minutes: 0
+            targets:
+              - type: schedule
+                id: security-primary
+          
+          - escalation_delay_in_minutes: 5
+            targets:
+              - type: schedule
+                id: security-secondary
+    
+    event_orchestration:
+      enabled: true
+      
+      rules:
+        - name: "Critical Severity"
+          condition: "event.severity == 'critical'"
+          action:
+            priority: P1
+            urgency: high
+        
+        - name: "Security Incident"
+          condition: "event.labels.category == 'security'"
+          action:
+            route_to: hsk-security
+            priority: P1
+        
+        - name: "Data Residency Violation"
+          condition: "event.alertname == 'DataResidencyViolation'"
+          action:
+            route_to: hsk-compliance
+            priority: P1
+        
+        - name: "Low Priority"
+          condition: "event.severity == 'info'"
+          action:
+            suppress: true
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: on-call-sync
+  namespace: monitoring
+spec:
+  schedule: "0 */6 * * *"  # Every 6 hours
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: sync
+            image: curlimages/curl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Sync on-call schedule with PagerDuty
+              curl -X GET "https://api.pagerduty.com/schedules" \
+                -H "Authorization: Bearer ${PAGERDUTY_TOKEN}" \
+                -H "Accept: application/vnd.pagerduty+json;version=2"
+          env:
+          - name: PAGERDUTY_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: pagerduty-credentials
+                key: api-token
+          restartPolicy: OnFailure

@@ -1,0 +1,178 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zk-service
+  namespace: hsk-verifier
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: zk-service
+  template:
+    metadata:
+      labels:
+        app: zk-service
+    spec:
+      containers:
+      - name: zk
+        image: hskernel/zk-service:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: REDIS_URL
+          value: "redis://redis:6379"
+        - name: PROVING_SYSTEM
+          value: "snarkjs"  # or bellman, arkworks
+        - name: CURVE
+          value: "bn128"  # or bls12_381
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "4000m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zk-service
+  namespace: hsk-verifier
+spec:
+  selector:
+    app: zk-service
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zk-config
+  namespace: hsk-verifier
+data:
+  config.yaml: |
+    # Zero-Knowledge Proof Configuration
+    
+    zk:
+      # Proof systems
+      systems:
+        snark:
+          enabled: true
+          curve: bn128
+          protocol: groth16
+          
+          circuits:
+            - name: consent_membership
+              description: "Prove consent exists without revealing details"
+              public_inputs:
+                - consent_hash
+                - merkle_root
+              private_inputs:
+                - consent_data
+                - merkle_path
+            
+            - name: age_verification
+              description: "Prove age > threshold without revealing birthdate"
+              public_inputs:
+                - threshold
+                - current_date
+              private_inputs:
+                - birth_date
+            
+            - name: identity_ownership
+              description: "Prove ownership of DID without revealing private key"
+              public_inputs:
+                - did
+                - challenge
+              private_inputs:
+                - private_key
+        
+        bulletproofs:
+          enabled: true
+          
+          circuits:
+            - name: range_proof
+              description: "Prove value is in range without revealing value"
+              range:
+                min: 0
+                max: 1000000
+        
+        zk_starks:
+          enabled: false  # Future consideration
+      
+      # Use cases
+      use_cases:
+        consent_verification:
+          description: "Verify consent without revealing consent details"
+          circuit: consent_membership
+          
+          flow:
+            1: "User generates proof of consent membership"
+            2: "Service verifies proof against Merkle root"
+            3: "No consent details revealed during verification"
+        
+        selective_disclosure:
+          description: "Disclose only necessary attributes"
+          
+          example:
+            credential: "Identity Credential"
+            disclose:
+              - "is_over_18: true"
+              - "country: US"
+            hide:
+              - "full_name"
+              - "date_of_birth"
+              - "address"
+        
+        private_computation:
+          description: "Compute on encrypted data"
+          
+          example:
+            scenario: "Count consenting users without revealing identities"
+            method: "Homomorphic encryption + ZK proofs"
+    
+    # Threshold signatures
+    threshold:
+      enabled: true
+      
+      schemes:
+        - BLS  # For aggregation
+        - Schnorr  # For multisig
+      
+      configurations:
+        - name: consent_issuance
+          threshold: 3
+          total: 5
+          participants:
+            - did:hsk:issuer:1
+            - did:hsk:issuer:2
+            - did:hsk:issuer:3
+            - did:hsk:issuer:4
+            - did:hsk:issuer:5
+        
+        - name: key_recovery
+          threshold: 2
+          total: 3
+          participants:
+            - did:hsk:recovery:1
+            - did:hsk:recovery:2
+            - did:hsk:recovery:3
+    
+    # HSM integration
+    hsm:
+      enabled: false  # Enable when HSM available
+      
+      providers:
+        - aws_cloudhsm
+        - hashicorp_vault_transit
+      
+      key_types:
+        - ed25519
+        - secp256k1
+      
+      operations:
+        - sign
+        - verify
+        - key_generation
+        - key_rotation

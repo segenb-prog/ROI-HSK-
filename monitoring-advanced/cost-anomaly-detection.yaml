@@ -1,0 +1,154 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cost-anomaly-detector
+  namespace: monitoring
+spec:
+  schedule: "0 */6 * * *"  # Every 6 hours
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: cost-analyzer-sa
+          containers:
+          - name: detector
+            image: hskernel/cost-analyzer:latest
+            env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: secret-access-key
+            - name: PROMETHEUS_URL
+              value: "http://prometheus:9090"
+            - name: ANOMALY_THRESHOLD
+              value: "2.0"  # Standard deviations
+            - name: MIN_COST_CHANGE
+              value: "100"  # Minimum $100 change to alert
+            command:
+            - /app/cost-analyzer
+            - --mode=detect
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "200m"
+              limits:
+                memory: "1Gi"
+                cpu: "1000m"
+          restartPolicy: OnFailure
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cost-anomaly-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    # Cost Anomaly Detection Configuration
+    
+    detection:
+      method: statistical  # statistical, ml, or rule-based
+      
+      statistical:
+        window: "7d"  # Historical window
+        threshold: 2.0  # Standard deviations
+        min_absolute: 100  # Minimum $100
+        min_percent: 20  # Minimum 20% change
+      
+      ml:
+        enabled: false
+        model: "isolation_forest"
+        training_window: "30d"
+      
+      rules:
+        - name: "Compute Spike"
+          condition: "compute_cost > baseline * 1.5"
+          severity: warning
+        
+        - name: "Storage Growth"
+          condition: "storage_cost > baseline * 1.3"
+          severity: info
+        
+        - name: "Network Egress"
+          condition: "network_cost > baseline * 2.0"
+          severity: warning
+        
+        - name: "Unexpected Service"
+          condition: "new_service_detected"
+          severity: critical
+    
+    alerts:
+      channels:
+        - type: slack
+          webhook: ${SLACK_WEBHOOK_URL}
+          channel: "#cost-alerts"
+        
+        - type: email
+          recipients:
+            - finance@hskernel.io
+            - platform@hskernel.io
+      
+      templates:
+        anomaly_detected: |
+          🚨 Cost Anomaly Detected
+          
+          Service: {{ .Service }}
+          Current Cost: ${{ .CurrentCost }}
+          Baseline: ${{ .Baseline }}
+          Change: {{ .PercentChange }}%
+          
+          Possible causes:
+          {{ range .PossibleCauses }}
+          - {{ . }}
+          {{ end }}
+          
+          Dashboard: {{ .DashboardURL }}
+    
+    optimization:
+      recommendations:
+        enabled: true
+        
+        checks:
+          - name: "Idle Resources"
+            description: "Identify unused or underutilized resources"
+            threshold: 0.1  # 10% utilization
+          
+          - name: "Reserved Instances"
+            description: "Recommend RI purchases for consistent workloads"
+            min_savings: 100
+          
+          - name: "Spot Instances"
+            description: "Identify workloads suitable for spot"
+            interrupt_tolerance: high
+          
+          - name: "Storage Optimization"
+            description: "Right-size storage and use appropriate tiers"
+            min_savings: 50
+          
+          - name: "Data Transfer"
+            description: "Optimize data transfer costs"
+            min_savings: 100
+    
+    reporting:
+      daily:
+        enabled: true
+        recipients:
+          - platform@hskernel.io
+      
+      weekly:
+        enabled: true
+        recipients:
+          - finance@hskernel.io
+          - platform@hskernel.io
+      
+      monthly:
+        enabled: true
+        recipients:
+          - finance@hskernel.io
+          - cto@hskernel.io
+        include_forecast: true

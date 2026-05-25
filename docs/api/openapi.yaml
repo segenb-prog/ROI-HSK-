@@ -1,0 +1,501 @@
+openapi: 3.0.3
+info:
+  title: HSK Falsification Machine API
+  description: |
+    Human Sovereignty Kernel (HSK) Falsification Machine API.
+    
+    This API provides endpoints for challenging AI systems to prove compliance
+    with human sovereignty principles, evaluating cryptographic proofs, and
+    issuing violation certificates.
+  version: 0.1.0
+  contact:
+    name: HSKernel Team
+    url: https://hskernel.dev
+  license:
+    name: MIT OR Apache-2.0
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://verifier.hskernel.dev
+    description: Production server
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Challenge
+    description: Challenge management
+  - name: Response
+    description: Response submission and evaluation
+  - name: Certificates
+    description: Certificate operations
+  - name: Transparency
+    description: Transparency log integration
+
+paths:
+  /:
+    get:
+      summary: API Information
+      tags: [Health]
+      responses:
+        '200':
+          description: API information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  version:
+                    type: string
+                  endpoints:
+                    type: array
+                    items:
+                      type: string
+
+  /health:
+    get:
+      summary: Health Check
+      tags: [Health]
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+
+  /challenge:
+    post:
+      summary: Create Challenge
+      description: Create a new proof request challenge for a system
+      tags: [Challenge]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateChallengeRequest'
+      responses:
+        '200':
+          description: Challenge created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChallengeResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /challenge/{requestId}:
+    get:
+      summary: Get Challenge
+      description: Retrieve a challenge by request ID
+      tags: [Challenge]
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Challenge found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProofRequest'
+        '404':
+          description: Challenge not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /response:
+    post:
+      summary: Submit Response
+      description: Submit a system's response to a challenge
+      tags: [Response]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemResponse'
+      responses:
+        '200':
+          description: Response evaluated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluationResult'
+        '400':
+          description: Invalid response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Challenge not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /certificates:
+    get:
+      summary: List Certificates
+      description: List all issued certificates
+      tags: [Certificates]
+      parameters:
+        - name: system_id
+          in: query
+          schema:
+            type: string
+        - name: compliant
+          in: query
+          schema:
+            type: boolean
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+      responses:
+        '200':
+          description: List of certificates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CertificateSummary'
+
+  /certificates/{certId}:
+    get:
+      summary: Get Certificate
+      description: Retrieve a certificate by ID
+      tags: [Certificates]
+      parameters:
+        - name: certId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Certificate found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Certificate'
+        '404':
+          description: Certificate not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /verify/{certId}:
+    get:
+      summary: Verify Certificate
+      description: Verify a certificate's signature
+      tags: [Certificates]
+      parameters:
+        - name: certId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  certificate_id:
+                    type: string
+                  valid:
+                    type: boolean
+                  system_id:
+                    type: string
+                  compliant:
+                    type: boolean
+
+  /transparency/submit:
+    post:
+      summary: Submit to Transparency Log
+      description: Submit a certificate to the transparency log
+      tags: [Transparency]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Certificate'
+      responses:
+        '200':
+          description: Certificate submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransparencyResponse'
+
+  /transparency/query:
+    get:
+      summary: Query Transparency Log
+      description: Query the transparency log for certificates
+      tags: [Transparency]
+      parameters:
+        - name: certificate_id
+          in: query
+          schema:
+            type: string
+        - name: system_id
+          in: query
+          schema:
+            type: string
+        - name: start_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Query results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogEntry'
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        key_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    CreateChallengeRequest:
+      type: object
+      required:
+        - system_id
+      properties:
+        system_id:
+          type: string
+          description: Unique identifier for the system being challenged
+        timeout_hours:
+          type: integer
+          default: 72
+          description: Challenge deadline in hours
+
+    ChallengeResponse:
+      type: object
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        system_id:
+          type: string
+        deadline:
+          type: string
+          format: date-time
+        requested_proofs:
+          type: array
+          items:
+            type: string
+            enum: [ConsentLedger, MemoryPassport, DeletionProof, PredictionScope]
+
+    ProofRequest:
+      type: object
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        system_id:
+          type: string
+        requested_proofs:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProofType'
+        issued_at:
+          type: string
+          format: date-time
+        deadline:
+          type: string
+          format: date-time
+        nonce:
+          type: string
+          description: Base64-encoded 32-byte nonce
+
+    ProofType:
+      type: string
+      enum:
+        - ConsentLedger
+        - MemoryPassport
+        - DeletionProof
+        - PredictionScope
+
+    SystemResponse:
+      type: object
+      required:
+        - request_id
+        - system_id
+        - provided_proofs
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        system_id:
+          type: string
+        provided_proofs:
+          type: array
+          items:
+            type: object
+            properties:
+              proof_type:
+                $ref: '#/components/schemas/ProofType'
+              data:
+                type: string
+                description: Base64-encoded proof data
+        submitted_at:
+          type: string
+          format: date-time
+
+    EvaluationResult:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [compliant, violation]
+        certificate_id:
+          type: string
+          description: Short certificate ID (first 8 hex chars)
+        reason:
+          type: string
+        missing_proofs:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProofType'
+        invalid_proofs:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProofType'
+
+    CertificateSummary:
+      type: object
+      properties:
+        certificate_id:
+          type: string
+        system_id:
+          type: string
+        compliant:
+          type: boolean
+        evaluation_time:
+          type: string
+          format: date-time
+
+    Certificate:
+      type: object
+      properties:
+        certificate_id:
+          type: string
+          description: Hex-encoded 32-byte hash
+        system_id:
+          type: string
+        evaluation_time:
+          type: string
+          format: date-time
+        hs_compliant:
+          type: boolean
+        violations:
+          type: array
+          items:
+            type: string
+        missing_proofs:
+          type: array
+          items:
+            type: string
+        invalid_proofs:
+          type: array
+          items:
+            type: string
+        issuer_public_key:
+          type: string
+          description: Base64-encoded Ed25519 public key
+        issuer_signature:
+          type: string
+          description: Base64-encoded Ed25519 signature
+
+    TransparencyResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        position:
+          type: integer
+          description: Position in the transparency log
+        merkle_root:
+          type: string
+          description: Hex-encoded root hash
+        inclusion_proof:
+          type: array
+          items:
+            type: string
+
+    LogEntry:
+      type: object
+      properties:
+        certificate_id:
+          type: string
+        system_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        compliant:
+          type: boolean
+        merkle_root:
+          type: string
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        code:
+          type: integer
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+security:
+  - bearerAuth: []

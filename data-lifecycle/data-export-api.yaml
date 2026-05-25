@@ -1,0 +1,199 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-export-service
+  namespace: hsk-verifier
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: data-export-service
+  template:
+    metadata:
+      labels:
+        app: data-export-service
+    spec:
+      containers:
+      - name: export-service
+        image: hskernel/data-export-service:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: url
+        - name: REDIS_URL
+          value: "redis://redis:6379"
+        - name: EXPORT_BUCKET
+          value: "hsk-data-exports"
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: aws-credentials
+              key: access-key-id
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aws-credentials
+              key: secret-access-key
+        - name: EXPORT_ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: export-encryption
+              key: key
+        - name: MAX_EXPORT_SIZE
+          value: "1073741824"  # 1GB
+        - name: EXPORT_TTL
+          value: "604800"  # 7 days
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-export-service
+  namespace: hsk-verifier
+spec:
+  selector:
+    app: data-export-service
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: data-export-ingress
+  namespace: hsk-verifier
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - export.hskernel.io
+    secretName: export-tls
+  rules:
+  - host: export.hskernel.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: data-export-service
+            port:
+              number: 8080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: data-export-formats
+  namespace: hsk-verifier
+data:
+  formats.yaml: |
+    # Data Export Formats (GDPR Article 20)
+    
+    formats:
+      json:
+        content_type: "application/json"
+        schema: "https://w3id.org/did/v1"
+        structured: true
+        machine_readable: true
+        default: true
+      
+      jsonld:
+        content_type: "application/ld+json"
+        context: "https://w3id.org/did/v1"
+        structured: true
+        machine_readable: true
+      
+      csv:
+        content_type: "text/csv"
+        structured: true
+        machine_readable: true
+        delimiter: ","
+        header: true
+      
+      xml:
+        content_type: "application/xml"
+        schema: "https://hskernel.io/schemas/data-export.xsd"
+        structured: true
+        machine_readable: true
+      
+      pdf:
+        content_type: "application/pdf"
+        structured: false
+        machine_readable: false
+        human_readable: true
+    
+    # Export schema
+    schema:
+      version: "1.0"
+      export_date: "ISO 8601 timestamp"
+      data_controller:
+        name: "HSK Platform Operator"
+        contact: "dpo@hskernel.io"
+      
+      data_subject:
+        did: "Decentralized Identifier"
+        verification_method: "How identity was verified"
+      
+      data_categories:
+        identity:
+          - did
+          - public_keys
+          - verification_credentials
+        
+        consent:
+          - consent_entries
+          - consent_history
+          - revocation_records
+        
+        transparency:
+          - transparency_log_entries
+          - merkle_proofs
+        
+        activity:
+          - access_logs
+          - session_history
+          - audit_trail
+        
+        preferences:
+          - notification_settings
+          - privacy_settings
+    
+    # Export procedure
+    procedure:
+      request:
+        method: POST
+        endpoint: /gdpr/export
+        authentication: DID + signature
+        parameters:
+          format: "json|jsonld|csv|xml|pdf"
+          date_from: "Optional start date"
+          date_to: "Optional end date"
+          categories: "Optional list of categories"
+      
+      processing:
+        timeline: "30 days"
+        steps:
+          - verify_identity
+          - gather_data
+          - format_export
+          - encrypt_package
+          - generate_download_link
+          - notify_user
+      
+      delivery:
+        method: "Secure download link"
+        ttl: "7 days"
+        encryption: "AES-256-GCM"
+        notification: "Email + in-app"

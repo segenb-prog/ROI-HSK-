@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: transparency-db
+spec:
+  replicas: 2
+  template:
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - transparency-db
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: postgres
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          env:
+            - name: POSTGRESQL_EXTRA_FLAGS
+              value: "--max_connections=500 --shared_buffers=1GB --effective_cache_size=3GB"
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: premium-rwo
+        resources:
+          requests:
+            storage: 500Gi
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: transparency-db
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: transparency-db

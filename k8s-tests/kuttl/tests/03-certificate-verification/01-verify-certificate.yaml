@@ -1,0 +1,24 @@
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+metadata:
+  name: verify-certificate
+commands:
+  - script: |
+      #!/bin/bash
+      set -e
+      
+      VERIFIER_POD=$(kubectl get pod -n hsk-verifier-test -l app=hs-verifier -o jsonpath='{.items[0].metadata.name}')
+      
+      # Get saved certificate ID
+      CERT_ID=$(kubectl get configmap kuttl-test-state -n hsk-verifier-test -o jsonpath='{.data.cert_id}')
+      
+      # Verify certificate
+      RESPONSE=$(kubectl exec -n hsk-verifier-test $VERIFIER_POD -- \
+        curl -sf "http://localhost:8080/verify/$CERT_ID")
+      
+      # Verify response
+      echo "$RESPONSE" | jq -e '.certificate_id == "'$CERT_ID'"'
+      echo "$RESPONSE" | jq -e '.valid == true'
+      echo "$RESPONSE" | jq -e '.compliant == false'  # Should be violation
+      
+      echo "✓ Certificate verified: $CERT_ID"

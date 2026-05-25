@@ -1,0 +1,208 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ddos-protection-config
+  namespace: hsk-verifier
+data:
+  ddos.yaml: |
+    # DDoS Protection Configuration
+    
+    # Detection thresholds
+    detection:
+      request_rate:
+        window: 10s
+        threshold: 1000
+        action: alert
+      
+      connection_rate:
+        window: 60s
+        threshold: 10000
+        action: block
+      
+      bandwidth:
+        window: 60s
+        threshold_mb: 1000
+        action: alert
+      
+      error_rate:
+        window: 60s
+        threshold_percent: 50
+        action: alert
+    
+    # Mitigation rules
+    mitigation:
+      # Automatic IP blocking
+      auto_block:
+        enabled: true
+        threshold: 500  # requests per minute
+        duration: 1h
+        escalation:
+          - threshold: 1000
+            duration: 24h
+          - threshold: 5000
+            duration: 168h  # 7 days
+      
+      # Challenge/response for suspicious traffic
+      challenge:
+        enabled: true
+        trigger:
+          request_rate: 100  # per minute
+          error_rate: 30     # percent
+        challenge_type: captcha
+        providers:
+          - recaptcha
+          - hcaptcha
+          - cloudflare_turnstile
+      
+      # Rate shaping
+      shaping:
+        enabled: true
+        slow_start: true
+        queue_size: 1000
+        drop_policy: tail
+    
+    # Bot detection
+    bot_detection:
+      enabled: true
+      methods:
+        - fingerprinting
+        - behavior_analysis
+        - challenge_response
+      
+      whitelist:
+        - user_agent: "Googlebot"
+          verification: dns_reverse
+        - user_agent: "Bingbot"
+          verification: dns_reverse
+      
+      blacklist:
+        - user_agent: "*scrapy*"
+        - user_agent: "*curl*"
+        - header_pattern: "X-Scanner: *"
+    
+    # Geographic blocking
+    geo_blocking:
+      enabled: false
+      mode: blacklist  # or whitelist
+      countries:
+        - CN
+        - RU
+        - KP
+      
+    # Layer 7 protection
+    layer7:
+      enabled: true
+      rules:
+        - name: sql_injection
+          pattern: "(?i)(union|select|insert|update|delete|drop|create|alter).*"
+          action: block
+        
+        - name: xss_attempt
+          pattern: "(?i)(<script|javascript:|onerror=|onload=).*"
+          action: block
+        
+        - name: path_traversal
+          pattern: "\.\./|\.\.\\"
+          action: block
+        
+        - name: large_payload
+          max_body_size: 10MB
+          action: reject
+    
+    # Alerting
+    alerting:
+      channels:
+        - type: pagerduty
+          service_key: ${PAGERDUTY_KEY}
+        - type: slack
+          webhook: ${SLACK_WEBHOOK}
+        - type: email
+          recipients:
+            - security@hskernel.io
+            - oncall@hskernel.io
+      
+      thresholds:
+        - name: attack_detected
+          condition: "mitigation_activated"
+          severity: critical
+        
+        - name: high_traffic
+          condition: "request_rate > 10000"
+          severity: warning
+        
+        - name: block_list_growing
+          condition: "blocked_ips > 1000"
+          severity: warning
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ddos-protector
+  namespace: hsk-verifier
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ddos-protector
+  template:
+    spec:
+      containers:
+      - name: protector
+        image: hskernel/ddos-protector:latest
+        ports:
+        - containerPort: 8080
+        - containerPort: 9090
+        env:
+        - name: REDIS_URL
+          value: "redis://redis:6379"
+        - name: CLOUDFLARE_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: cloudflare-credentials
+              key: api-token
+        - name: CLOUDFLARE_ZONE_ID
+          valueFrom:
+            secretKeyRef:
+              name: cloudflare-credentials
+              key: zone-id
+        volumeMounts:
+        - name: config
+          mountPath: /etc/ddos-protector
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "2000m"
+      volumes:
+      - name: config
+        configMap:
+          name: ddos-protection-config
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ddos-network-policy
+  namespace: hsk-verifier
+spec:
+  podSelector:
+    matchLabels:
+      app: hs-verifier
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    ports:
+    - protocol: TCP
+      port: 8080
+  - from:
+    - podSelector:
+        matchLabels:
+          app: ddos-protector
+    ports:
+    - protocol: TCP
+      port: 8080

@@ -1,0 +1,33 @@
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+metadata:
+  name: submit-to-transparency-log
+commands:
+  - script: |
+      #!/bin/bash
+      set -e
+      
+      VERIFIER_POD=$(kubectl get pod -n hsk-verifier-test -l app=hs-verifier -o jsonpath='{.items[0].metadata.name}')
+      LOG_POD=$(kubectl get pod -n hsk-verifier-test -l app=transparency-log -o jsonpath='{.items[0].metadata.name}')
+      
+      # Get certificate
+      CERT_ID=$(kubectl get configmap kuttl-test-state -n hsk-verifier-test -o jsonpath='{.data.cert_id}')
+      
+      CERT=$(kubectl exec -n hsk-verifier-test $VERIFIER_POD -- \
+        curl -sf "http://localhost:8080/certificates/$CERT_ID")
+      
+      # Submit to transparency log
+      LOG_URL="http://transparency-log:8080"
+      RESPONSE=$(kubectl exec -n hsk-verifier-test $VERIFIER_POD -- \
+        curl -sf -X POST "http://localhost:8080/transparency/submit" \
+        -H "Content-Type: application/json" \
+        -d "{
+          \"certificate\": $CERT,
+          \"log_url\": \"$LOG_URL\"
+        }")
+      
+      # Verify submission
+      echo "$RESPONSE" | jq -e '.position >= 0'
+      echo "$RESPONSE" | jq -e '.merkle_root != null'
+      
+      echo "✓ Certificate submitted to transparency log at position $(echo "$RESPONSE" | jq '.position')"

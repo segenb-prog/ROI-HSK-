@@ -1,0 +1,500 @@
+name: HSK Platform CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  pull_request:
+    branches: [main, develop]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  # =============================================================================
+  # RUST SERVICES
+  # =============================================================================
+  
+  rust-lint:
+    name: Rust Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          components: rustfmt, clippy
+      
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+        working-directory: ./services
+      
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+        working-directory: ./services
+
+  rust-test:
+    name: Rust Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: hsk_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+      
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+      
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin
+      
+      - name: Run tests
+        run: cargo test --all-features
+        working-directory: ./services
+        env:
+          DATABASE_URL: postgres://test:test@localhost:5432/hsk_test
+          REDIS_URL: redis://localhost:6379
+      
+      - name: Generate coverage report
+        run: cargo tarpaulin --out Xml --all-features
+        working-directory: ./services
+        env:
+          DATABASE_URL: postgres://test:test@localhost:5432/hsk_test
+          REDIS_URL: redis://localhost:6379
+      
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./services/cobertura.xml
+          flags: rust
+          name: rust-coverage
+
+  rust-build:
+    name: Rust Build
+    runs-on: ubuntu-latest
+    needs: [rust-lint, rust-test]
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+      
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+      
+      - name: Build release
+        run: cargo build --release --target ${{ matrix.target }}
+        working-directory: ./services
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-binaries-${{ matrix.target }}
+          path: |
+            ./services/target/${{ matrix.target }}/release/hsk-*
+
+  # =============================================================================
+  # DOCKER BUILD
+  # =============================================================================
+  
+  docker-build:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: [rust-build]
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Login to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+      
+      - name: Build and push
+        uses: docker/bake-action@v4
+        with:
+          files: |
+            ./docker-bake.hcl
+            ${{ steps.meta.outputs.bake-file }}
+          targets: default
+          push: true
+
+  # =============================================================================
+  # KUBERNETES VALIDATION
+  # =============================================================================
+  
+  k8s-validate:
+    name: Kubernetes Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install kubeval
+        run: |
+          wget https://github.com/instrumenta/kubeval/releases/latest/download/kubeval-linux-amd64.tar.gz
+          tar xf kubeval-linux-amd64.tar.gz
+          sudo cp kubeval /usr/local/bin
+      
+      - name: Install kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin
+      
+      - name: Validate Kubernetes manifests
+        run: |
+          for env in development staging production; do
+            echo "Validating $env environment..."
+            kustomize build kubernetes/overlays/$env | kubeval --strict
+          done
+      
+      - name: Run conftest
+        uses: instrumenta/conftest-action@master
+        with:
+          files: kubernetes/
+          policy: policies/k8s/
+
+  # =============================================================================
+  # SECURITY SCANNING
+  # =============================================================================
+  
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+      
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+      
+      - name: Run cargo-audit
+        run: |
+          cargo install cargo-audit
+          cargo audit
+        working-directory: ./services
+      
+      - name: Run Semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/owasp-top-ten
+            p/cwe-top-25
+
+  # =============================================================================
+  # MOBILE SDKs
+  # =============================================================================
+  
+  flutter-test:
+    name: Flutter SDK Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.16.0'
+          channel: 'stable'
+      
+      - name: Get dependencies
+        run: flutter pub get
+        working-directory: ./mobile-sdks/flutter
+      
+      - name: Analyze
+        run: flutter analyze
+        working-directory: ./mobile-sdks/flutter
+      
+      - name: Run tests
+        run: flutter test --coverage
+        working-directory: ./mobile-sdks/flutter
+      
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./mobile-sdks/flutter/coverage/lcov.info
+          flags: flutter
+          name: flutter-coverage
+
+  react-native-test:
+    name: React Native SDK Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ./mobile-sdks/react-native/package-lock.json
+      
+      - name: Install dependencies
+        run: npm ci
+        working-directory: ./mobile-sdks/react-native
+      
+      - name: Run linter
+        run: npm run lint
+        working-directory: ./mobile-sdks/react-native
+      
+      - name: Run tests
+        run: npm test -- --coverage
+        working-directory: ./mobile-sdks/react-native
+      
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./mobile-sdks/react-native/coverage/lcov.info
+          flags: react-native
+          name: react-native-coverage
+
+  # =============================================================================
+  # INTEGRATION TESTS
+  # =============================================================================
+  
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    if: github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+      
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+      
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: hsk-test
+          config: tests/k8s/kind-config.yaml
+      
+      - name: Load Docker images
+        run: |
+          kind load docker-image ghcr.io/${{ github.repository }}:sha-${{ github.sha }} --name hsk-test
+      
+      - name: Deploy to Kind
+        run: |
+          kubectl apply -k kubernetes/overlays/development
+          kubectl wait --for=condition=ready pod -l app=hsk-verifier --timeout=300s
+      
+      - name: Run integration tests
+        run: |
+          ./scripts/integration-tests.sh --environment kind
+      
+      - name: Run chaos tests
+        run: |
+          ./scripts/chaos-tests.sh --environment kind
+      
+      - name: Collect logs
+        if: failure()
+        run: |
+          kubectl logs -l app=hsk-verifier --all-containers > integration-test-logs.txt
+      
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-logs
+          path: integration-test-logs.txt
+
+  # =============================================================================
+  # DEPLOYMENT
+  # =============================================================================
+  
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [integration-test, security-scan]
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name hsk-staging
+      
+      - name: Deploy to staging
+        run: |
+          kubectl apply -k kubernetes/overlays/staging
+          kubectl rollout status deployment/hsk-verifier -n hsk-staging --timeout=300s
+      
+      - name: Run smoke tests
+        run: |
+          ./scripts/smoke-tests.sh --environment staging
+      
+      - name: Notify Slack
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          text: 'Staging deployment ${{ job.status }}'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [integration-test, security-scan]
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name hsk-production
+      
+      - name: Canary deployment
+        run: |
+          # Deploy canary (10% traffic)
+          kubectl apply -k kubernetes/overlays/production-canary
+          kubectl rollout status deployment/hsk-verifier-canary -n hsk-production --timeout=300s
+          
+          # Wait for canary analysis period
+          sleep 300
+          
+          # Check canary metrics
+          ./scripts/canary-analysis.sh --environment production
+      
+      - name: Full deployment
+        if: success()
+        run: |
+          kubectl apply -k kubernetes/overlays/production
+          kubectl rollout status deployment/hsk-verifier -n hsk-production --timeout=600s
+      
+      - name: Run production smoke tests
+        run: |
+          ./scripts/smoke-tests.sh --environment production
+      
+      - name: Notify PagerDuty
+        if: failure()
+        uses: Entle/action-pagerduty-alert@0.2.0
+        with:
+          pagerduty-integration-key: ${{ secrets.PAGERDUTY_KEY }}
+          pagerduty-dedup-key: deployment-failed
+
+  # =============================================================================
+  # RELEASE
+  # =============================================================================
+  
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Generate changelog
+        id: changelog
+        uses: mikepenz/release-changelog-builder-action@v4
+        with:
+          configuration: .github/changelog-config.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Create Release
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

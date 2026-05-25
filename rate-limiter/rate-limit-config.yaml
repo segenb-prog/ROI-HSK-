@@ -1,0 +1,255 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rate-limit-config
+  namespace: hsk-verifier
+data:
+  rate_limit.yaml: |
+    # Rate Limiting Configuration
+    
+    # Redis connection
+    redis:
+      url: "redis://redis:6379"
+      pool_size: 100
+      timeout: 100ms
+      retry_attempts: 3
+    
+    # Rate limit algorithms
+    algorithms:
+      token_bucket:
+        enabled: true
+        default_burst: 100
+      sliding_window:
+        enabled: true
+        window_size: 60s
+      fixed_window:
+        enabled: false
+    
+    # Rate limit rules
+    rules:
+      # Global limits
+      - name: global
+        type: ip
+        key: "{{remote_addr}}"
+        limits:
+          - window: 1s
+            limit: 100
+          - window: 1m
+            limit: 1000
+          - window: 1h
+            limit: 10000
+        action: reject
+        response:
+          status_code: 429
+          body: '{"error": "Rate limit exceeded", "retry_after": "{{retry_after}}"}'
+      
+      # Per-user limits
+      - name: user
+        type: user
+        key: "{{user_id}}"
+        limits:
+          - window: 1s
+            limit: 50
+          - window: 1m
+            limit: 500
+          - window: 1h
+            limit: 5000
+        action: throttle
+        throttle_delay: 1s
+      
+      # Per-endpoint limits
+      - name: challenge_endpoint
+        type: endpoint
+        key: "{{endpoint}}:{{user_id}}"
+        match:
+          path: "/challenge"
+          methods: [POST]
+        limits:
+          - window: 1m
+            limit: 10
+          - window: 1h
+            limit: 100
+        action: reject
+      
+      - name: certificate_endpoint
+        type: endpoint
+        key: "{{endpoint}}:{{user_id}}"
+        match:
+          path: "/certificates/*"
+          methods: [GET]
+        limits:
+          - window: 1m
+            limit: 100
+          - window: 1h
+            limit: 1000
+        action: reject
+      
+      - name: transparency_log
+        type: endpoint
+        key: "{{endpoint}}:{{ip}}"
+        match:
+          path: "/transparency/*"
+        limits:
+          - window: 1s
+            limit: 1000
+          - window: 1m
+            limit: 10000
+        action: reject
+      
+      # DDoS protection
+      - name: ddos_protection
+        type: ip
+        key: "{{remote_addr}}"
+        limits:
+          - window: 10s
+            limit: 500
+        action: block
+        block_duration: 1h
+        whitelist:
+          - "10.0.0.0/8"
+          - "172.16.0.0/12"
+          - "192.168.0.0/16"
+      
+      # Burst protection
+      - name: burst_protection
+        type: ip
+        key: "{{remote_addr}}"
+        limits:
+          - window: 1s
+            limit: 200
+        action: throttle
+        throttle_delay: 100ms
+    
+    # Distributed rate limiting
+    distributed:
+      enabled: true
+      sync_interval: 1s
+      consistency: eventual
+    
+    # Metrics
+    metrics:
+      enabled: true
+      prefix: "hsk_rate_limit"
+      labels:
+        - rule
+        - key
+        - action
+    
+    # Headers
+    headers:
+      limit: X-RateLimit-Limit
+      remaining: X-RateLimit-Remaining
+      reset: X-RateLimit-Reset
+      retry_after: Retry-After
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rate-limiter
+  namespace: hsk-verifier
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: rate-limiter
+  template:
+    metadata:
+      labels:
+        app: rate-limiter
+    spec:
+      containers:
+      - name: rate-limiter
+        image: hskernel/rate-limiter:latest
+        ports:
+        - containerPort: 8080
+        - containerPort: 9090
+        env:
+        - name: REDIS_URL
+          value: "redis://redis:6379"
+        - name: CONFIG_PATH
+          value: "/etc/rate-limiter/rate_limit.yaml"
+        - name: LOG_LEVEL
+          value: "info"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/rate-limiter
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: rate-limit-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rate-limiter
+  namespace: hsk-verifier
+spec:
+  selector:
+    app: rate-limiter
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+---
+apiVersion: networking.istio.io/v1beta1
+kind: EnvoyFilter
+metadata:
+  name: rate-limit-filter
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      istio: ingressgateway
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: GATEWAY
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.local_ratelimit
+        typed_config:
+          "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+          type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+          value:
+            stat_prefix: http_local_rate_limiter
+            token_bucket:
+              max_tokens: 100
+              tokens_per_fill: 10
+              fill_interval: 1s
+            filter_enabled:
+              runtime_key: local_rate_limit_enabled
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+            filter_enforced:
+              runtime_key: local_rate_limit_enforced
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+            response_headers_to_add:
+            - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+              header:
+                key: x-local-rate-limit
+                value: 'true'
+            local_rate_limit_per_downstream_connection: false

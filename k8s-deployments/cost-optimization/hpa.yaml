@@ -1,0 +1,135 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hs-verifier
+  namespace: hsk-verifier
+  annotations:
+    # Enable predictive scaling based on historical patterns
+    predictive-scaling.enabled: "true"
+    predictive-scaling.window: "7d"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hs-verifier
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    # CPU-based scaling
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    # Memory-based scaling
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+    # Custom metric: requests per second
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "100"
+    # Custom metric: verification queue depth
+    - type: External
+      external:
+        metric:
+          name: verification_queue_depth
+          selector:
+            matchLabels:
+              service: hs-verifier
+        target:
+          type: AverageValue
+          averageValue: "50"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+      selectPolicy: Max
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: transparency-log
+  namespace: hsk-verifier
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: transparency-log
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: External
+      external:
+        metric:
+          name: log_entries_per_second
+        target:
+          type: AverageValue
+          averageValue: "1000"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+---
+# Vertical Pod Autoscaler for right-sizing
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: hs-verifier-vpa
+  namespace: hsk-verifier
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hs-verifier
+  updatePolicy:
+    updateMode: "Off"  # Set to "Auto" for automatic updates
+  resourcePolicy:
+    containerPolicies:
+      - containerName: verifier
+        minAllowed:
+          cpu: 100m
+          memory: 128Mi
+        maxAllowed:
+          cpu: 2000m
+          memory: 2Gi
+        controlledResources: ["cpu", "memory"]

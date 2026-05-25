@@ -1,0 +1,145 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: synthetic-monitor
+  namespace: monitoring
+spec:
+  schedule: "*/1 * * * *"  # Every minute
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: synthetics
+            image: curlimages/curl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              ENDPOINTS="
+              https://api.hskernel.io/health
+              https://api.hskernel.io/challenge
+              https://auth.hskernel.io/health
+              https://export.hskernel.io/health
+              "
+              
+              for ENDPOINT in $ENDPOINTS; do
+                START=$(date +%s%N)
+                STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                  --max-time 10 \
+                  -H "User-Agent: HSK-Synthetic-Monitor/1.0" \
+                  "$ENDPOINT" || echo "000")
+                END=$(date +%s%N)
+                LATENCY=$(( (END - START) / 1000000 ))
+                
+                # Send metrics
+                echo "synthetic_check_status{endpoint=\"$ENDPOINT\"} $STATUS" | \
+                  curl -X POST http://prometheus-pushgateway:9091/metrics/job/synthetic --data-binary @-
+                
+                echo "synthetic_check_latency_ms{endpoint=\"$ENDPOINT\"} $LATENCY" | \
+                  curl -X POST http://prometheus-pushgateway:9091/metrics/job/synthetic --data-binary @-
+                
+                if [ "$STATUS" != "200" ]; then
+                  echo "ALERT: $ENDPOINT returned $STATUS"
+                fi
+              done
+          restartPolicy: OnFailure
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rum-collector
+  namespace: monitoring
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rum-collector
+  template:
+    metadata:
+      labels:
+        app: rum-collector
+    spec:
+      containers:
+      - name: collector
+        image: hskernel/rum-collector:latest
+        ports:
+        - containerPort: 8080
+        - containerPort: 9090
+        env:
+        - name: CLICKHOUSE_URL
+          value: "clickhouse://clickhouse:9000"
+        - name: KAFKA_BROKERS
+          value: "kafka:9092"
+        - name: SAMPLING_RATE
+          value: "0.1"  # 10% sampling
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rum-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    # Real User Monitoring Configuration
+    
+    collection:
+      enabled: true
+      sampling_rate: 0.1
+      
+      metrics:
+        page_load:
+          - navigation_start
+          - dom_content_loaded
+          - load_complete
+          - first_paint
+          - first_contentful_paint
+          - largest_contentful_paint
+        
+        api_calls:
+          - request_duration
+          - response_size
+          - status_code
+          - endpoint
+        
+        errors:
+          - javascript_errors
+          - api_errors
+          - network_errors
+        
+        user_experience:
+          - time_to_interactive
+          - cumulative_layout_shift
+          - total_blocking_time
+    
+    privacy:
+      mask_ips: true
+      mask_user_ids: true
+      exclude_fields:
+        - password
+        - token
+        - credit_card
+      
+      retention: "90 days"
+    
+    alerting:
+      thresholds:
+        - metric: page_load_time
+          threshold: 3000  # ms
+          severity: warning
+        
+        - metric: error_rate
+          threshold: 0.01  # 1%
+          severity: critical
+        
+        - metric: api_latency_p99
+          threshold: 1000  # ms
+          severity: warning

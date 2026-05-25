@@ -1,0 +1,130 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hsk-platform
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/name: hsk-platform
+    app.kubernetes.io/part-of: hsk
+    environment: production
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/hsk-platform/ri0-platform.git
+    targetRevision: HEAD
+    path: kubernetes/overlays/production
+    helm:
+      valueFiles:
+        - values-production.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hsk-production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+    - group: ""
+      kind: Secret
+      jsonPointers:
+        - /data
+  revisionHistoryLimit: 10
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hsk-platform-staging
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/name: hsk-platform
+    app.kubernetes.io/part-of: hsk
+    environment: staging
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/hsk-platform/ri0-platform.git
+    targetRevision: develop
+    path: kubernetes/overlays/staging
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hsk-staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hsk-monitoring
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: hsk-monitoring
+    app.kubernetes.io/part-of: hsk
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/hsk-platform/ri0-platform.git
+    targetRevision: HEAD
+    path: monitoring/kube-prometheus-stack
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hsk-vault
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: hsk-vault
+    app.kubernetes.io/part-of: hsk
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/hsk-platform/ri0-platform.git
+    targetRevision: HEAD
+    path: kubernetes/vault
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: vault
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+  # Vault requires manual unseal, don't auto-sync
+  syncPolicy:
+    automated: null

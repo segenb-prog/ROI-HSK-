@@ -1,0 +1,24 @@
+[package]
+name = "hsk-post-quantum-crypto"
+version = "1.0.0"
+edition = "2021"
+authors = ["HSK Team <team@hsk.platform>"]
+description = "Post-quantum cryptography for HSK using NIST-standardized algorithms"
+license = "AGPL-3.0"
+
+[dependencies]
+pqcrypto-dilithium = "0.5"
+pqcrypto-kyber = "0.7"
+pqcrypto-traits = "0.3"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand = "0.8"
+sha2 = "0.10"
+hkdf = "0.12"
+hex = "0.4"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "pq_benchmarks"
+harness = false

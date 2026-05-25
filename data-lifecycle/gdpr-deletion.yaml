@@ -1,0 +1,238 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gdpr-deletion-workflow
+  namespace: hsk-verifier
+spec:
+  template:
+    spec:
+      serviceAccountName: gdpr-sa
+      containers:
+      - name: deletion-processor
+        image: hskernel/gdpr-processor:latest
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: url
+        - name: REDIS_URL
+          value: "redis://redis:6379"
+        - name: VAULT_ADDR
+          value: "https://vault.vault.svc.cluster.local:8200"
+        - name: VAULT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: vault-gdpr-token
+              key: token
+        - name: NOTIFICATION_EMAIL
+          value: "dpo@hskernel.io"
+        command:
+        - /app/gdpr-processor
+        - --mode=deletion
+        - --request-id=${REQUEST_ID}
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+      restartPolicy: Never
+  backoffLimit: 3
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gdpr-deletion-procedure
+  namespace: hsk-verifier
+data:
+  procedure.md: |
+    # GDPR Right to Erasure (Right to be Forgotten) Procedure
+    
+    ## Overview
+    
+    This document describes the procedure for handling GDPR Article 17 (Right to Erasure) requests.
+    
+    ## Request Flow
+    
+    ```
+    1. Request Received
+         ↓
+    2. Identity Verification (DID + signature)
+         ↓
+    3. Request Validation
+         ↓
+    4. Data Inventory
+         ↓
+    5. Legal Basis Review
+         ↓
+    6. Deletion Execution
+         ↓
+    7. Verification
+         ↓
+    8. Confirmation
+    ```
+    
+    ## Step-by-Step Procedure
+    
+    ### Step 1: Request Received
+    
+    - Request submitted via: API, email, or mail
+    - Log request in GDPR tracking system
+    - Send acknowledgment within 24 hours
+    
+    ### Step 2: Identity Verification
+    
+    - Verify DID ownership via cryptographic signature
+    - For email/mail requests: additional verification required
+    - Document verification method
+    
+    ### Step 3: Request Validation
+    
+    Check for:
+    - Valid DID format
+    - Data subject exists in system
+    - No conflicting legal obligations
+    
+    ### Step 4: Data Inventory
+    
+    Identify all data for the DID:
+    ```sql
+    SELECT * FROM consent_entries WHERE did = ?;
+    SELECT * FROM transparency_log WHERE did = ?;
+    SELECT * FROM audit_logs WHERE did = ?;
+    SELECT * FROM sessions WHERE did = ?;
+    ```
+    
+    ### Step 5: Legal Basis Review
+    
+    Check exceptions under Article 17(3):
+    - Legal obligation (audit logs, transparency logs)
+    - Legal claims (active disputes)
+    - Public interest (transparency)
+    
+    ### Step 6: Deletion Execution
+    
+    For each data category:
+    
+    #### Consent Entries
+    - Generate deletion proof
+    - Anonymize DID (retain hash for audit)
+    - Mark as deleted
+    - Add to transparency log
+    
+    #### Transparency Log
+    - Cannot delete (immutable)
+    - Anonymize DID
+    - Add deletion attestation
+    
+    #### Audit Logs
+    - Retain for legal obligation
+    - Anonymize DID
+    
+    #### Sessions
+    - Delete immediately
+    
+    ### Step 7: Verification
+    
+    - Verify no remaining identifiable data
+    - Generate deletion certificate
+    - Update request status
+    
+    ### Step 8: Confirmation
+    
+    - Send confirmation to data subject
+    - Include deletion certificate
+    - Close request in tracking system
+    
+    ## Timeline
+    
+    | Stage | Timeline |
+    |-------|----------|
+    | Acknowledgment | 24 hours |
+    | Verification | 3 days |
+    | Deletion | 25 days |
+    | Confirmation | 30 days total |
+    
+    ## Exceptions Log
+    
+    If deletion cannot be completed:
+    - Document reason
+    - Inform data subject
+    - Provide alternative (anonymization)
+    
+  deletion_script.sql: |
+    -- GDPR Deletion Script
+    -- This script anonymizes/deletes all personal data for a given DID
+    
+    -- Parameters
+    \set did 'did:hsk:example123'
+    \set request_id 'req-abc-123'
+    
+    BEGIN;
+    
+    -- 1. Generate deletion proof
+    INSERT INTO deletion_proofs (did, request_id, deleted_at, proof_hash)
+    VALUES (
+      :'did',
+      :'request_id',
+      NOW(),
+      encode(digest(:'did' || NOW()::text, 'sha256'), 'hex')
+    );
+    
+    -- 2. Anonymize consent entries (retain for audit)
+    UPDATE consent_entries
+    SET 
+      did = encode(digest(did || 'consent_salt', 'sha256'), 'hex'),
+      metadata = '{}',
+      updated_at = NOW()
+    WHERE did = :'did';
+    
+    -- 3. Anonymize transparency log entries
+    UPDATE transparency_log
+    SET 
+      did = encode(digest(did || 'transparency_salt', 'sha256'), 'hex'),
+      updated_at = NOW()
+    WHERE did = :'did';
+    
+    -- 4. Delete sessions
+    DELETE FROM sessions WHERE did = :'did';
+    
+    -- 5. Delete MFA devices
+    DELETE FROM mfa_devices WHERE did = :'did';
+    
+    -- 6. Delete OAuth connections
+    DELETE FROM oauth_connections WHERE did = :'did';
+    
+    -- 7. Anonymize audit logs (retain for legal obligation)
+    UPDATE audit_logs
+    SET 
+      did = encode(digest(did || 'audit_salt', 'sha256'), 'hex'),
+      details = NULL
+    WHERE did = :'did';
+    
+    -- 8. Update deletion request status
+    UPDATE deletion_requests
+    SET 
+      status = 'completed',
+      completed_at = NOW(),
+      anonymized_did = encode(digest(:'did' || 'deletion_salt', 'sha256'), 'hex')
+    WHERE did = :'did' AND request_id = :'request_id';
+    
+    -- 9. Add to transparency log
+    INSERT INTO transparency_log (
+      operation,
+      did,
+      data_hash,
+      previous_hash,
+      timestamp
+    ) VALUES (
+      'GDPR_DELETION',
+      encode(digest(:'did' || 'transparency_salt', 'sha256'), 'hex'),
+      encode(digest(:'request_id' || NOW()::text, 'sha256'), 'hex'),
+      (SELECT MAX(data_hash) FROM transparency_log),
+      NOW()
+    );
+    
+    COMMIT;

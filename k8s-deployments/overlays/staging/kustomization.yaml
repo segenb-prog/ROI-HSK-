@@ -1,0 +1,53 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: hsk-verifier-staging
+
+namePrefix: staging-
+
+commonLabels:
+  environment: staging
+  app.kubernetes.io/part-of: hsk-verifier
+
+resources:
+  - ../../namespace.yaml
+  - ../../configmaps.yaml
+  - ../../database.yaml
+  - ../../verifier-deployment.yaml
+  - ../../transparency-log-deployment.yaml
+  - ../../monitoring.yaml
+  - ../../network-policies.yaml
+  - ../../rbac.yaml
+
+patchesStrategicMerge:
+  - verifier-patch.yaml
+  - database-patch.yaml
+  - ingress-patch.yaml
+
+configMapGenerator:
+  - name: hsk-config
+    behavior: merge
+    literals:
+      - ENVIRONMENT=staging
+      - LOG_LEVEL=debug
+      - VERIFICATION_TIMEOUT=48
+
+secretGenerator:
+  - name: hsk-keyring
+    behavior: merge
+    files:
+      - keyring.json=staging-keyring.json
+
+replicas:
+  - name: hs-verifier
+    count: 1
+  - name: transparency-log
+    count: 1
+
+images:
+  - name: hskernel/hs-verifier
+    newTag: staging-latest
+  - name: hskernel/did-server
+    newTag: staging-latest
+  - name: hskernel/transparency-log
+    newTag: staging-latest

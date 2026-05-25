@@ -1,0 +1,122 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-database-setup
+  namespace: vault
+spec:
+  template:
+    spec:
+      serviceAccountName: vault-setup
+      containers:
+      - name: setup
+        image: hashicorp/vault:1.15.0
+        env:
+        - name: VAULT_ADDR
+          value: "https://vault.vault.svc.cluster.local:8200"
+        - name: VAULT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: vault-root-token
+              key: token
+        - name: DB_HOST
+          value: "transparency-db.hsk-verifier.svc.cluster.local"
+        - name: DB_NAME
+          value: "consent_ledger"
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          
+          echo "Configuring Vault Database Secrets Engine..."
+          
+          # Enable database secrets engine
+          vault secrets enable -path=database database || true
+          
+          # Configure PostgreSQL connection
+          vault write database/config/hsk-postgresql \
+            plugin_name=postgresql-database-plugin \
+            allowed_roles="hsk-app,hsk-admin" \
+            connection_url="postgresql://{{username}}:{{password}}@${DB_HOST}:5432/${DB_NAME}?sslmode=require" \
+            username="vaultadmin" \
+            password="${DB_VAULT_PASSWORD}"
+          
+          # Create dynamic role for application
+          vault write database/roles/hsk-app \
+            db_name=hsk-postgresql \
+            creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; \
+              GRANT SELECT,INSERT,UPDATE ON consent_entries TO \"{{name}}\"; \
+              GRANT SELECT,INSERT,UPDATE ON hash_chain TO \"{{name}}\"; \
+              GRANT SELECT,INSERT,UPDATE ON transparency_log TO \"{{name}}\";" \
+            default_ttl="1h" \
+            max_ttl="24h" \
+            revocation_statements="REVOKE ALL ON consent_entries FROM \"{{name}}\"; \
+              REVOKE ALL ON hash_chain FROM \"{{name}}\"; \
+              REVOKE ALL ON transparency_log FROM \"{{name}}\"; \
+              DROP ROLE IF EXISTS \"{{name}}\";"
+          
+          # Create admin role with more permissions
+          vault write database/roles/hsk-admin \
+            db_name=hsk-postgresql \
+            creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}' SUPERUSER;" \
+            default_ttl="30m" \
+            max_ttl="1h"
+          
+          echo "Database secrets engine configured successfully!"
+          
+          # Enable transit encryption
+          echo "Configuring Transit Secrets Engine..."
+          vault secrets enable -path=transit transit || true
+          
+          # Create encryption keys
+          vault write -f transit/keys/hsk-consent
+          vault write -f transit/keys/hsk-passport
+          vault write -f transit/keys/hsk-audit
+          
+          # Configure key rotation (auto-rotate every 90 days)
+          vault write transit/keys/hsk-consent/config \
+            auto_rotate_period="2160h"
+          
+          echo "Transit secrets engine configured successfully!"
+          
+          # Enable PKI for certificate management
+          echo "Configuring PKI Secrets Engine..."
+          vault secrets enable -path=pki pki || true
+          vault secrets tune -max-lease-ttl=87600h pki
+          
+          # Generate root CA
+          vault write pki/root/generate/internal \
+            common_name="HSK Root CA" \
+            ttl=87600h \
+            key_type="ed25519"
+          
+          # Configure role for service certificates
+          vault write pki/roles/hsk-service \
+            allowed_domains="hskernel.io,svc.cluster.local" \
+            allow_subdomains=true \
+            max_ttl="720h" \
+            key_type="ed25519"
+          
+          echo "PKI secrets engine configured successfully!"
+          
+          # Enable KV v2 for static secrets
+          echo "Configuring KV Secrets Engine..."
+          vault secrets enable -path=secret -version=2 kv || true
+          
+          # Store application secrets
+          vault kv put secret/hsk/app/api-keys \
+            transparency-log="$(openssl rand -hex 32)" \
+            webhook-signing="$(openssl rand -hex 32)"
+          
+          vault kv put secret/hsk/app/encryption \
+            backup-key="$(openssl rand -hex 32)" \
+            session-key="$(openssl rand -hex 32)"
+          
+          echo "KV secrets engine configured successfully!"
+          
+          # Configure audit logging
+          echo "Configuring Audit Logging..."
+          vault audit enable file file_path=/vault/logs/audit.log || true
+          
+          echo "Vault setup completed successfully!"
+      restartPolicy: OnFailure

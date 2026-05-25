@@ -1,0 +1,347 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "hsk-security",
+    "title": "HSK - Security Events",
+    "tags": ["hsk", "security", "monitoring"],
+    "timezone": "utc",
+    "schemaVersion": 36,
+    "refresh": "5s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Security Alerts (24h)",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "sum(increase(hsk_security_alert_total[24h]))",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": 0},
+                {"color": "yellow", "value": 10},
+                {"color": "red", "value": 50}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "Failed Auth Attempts (24h)",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+        "targets": [
+          {
+            "expr": "sum(increase(hsk_auth_failed_total[24h]))",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": 0},
+                {"color": "yellow", "value": 100},
+                {"color": "red", "value": 500}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 3,
+        "title": "Rate Limited Requests (24h)",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+        "targets": [
+          {
+            "expr": "sum(increase(hsk_rate_limited_total[24h]))",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area"
+        }
+      },
+      {
+        "id": 4,
+        "title": "Anomalies Detected (ML)",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "sum(increase(hsk_ml_anomaly_detected_total[24h]))",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": 0},
+                {"color": "yellow", "value": 5},
+                {"color": "red", "value": 20}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 5,
+        "title": "Security Events by Severity",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 16, "y": 0},
+        "targets": [
+          {
+            "expr": "sum(rate(hsk_security_alert_total{severity=\"critical\"}[5m]))",
+            "legendFormat": "Critical",
+            "refId": "A"
+          },
+          {
+            "expr": "sum(rate(hsk_security_alert_total{severity=\"high\"}[5m]))",
+            "legendFormat": "High",
+            "refId": "B"
+          },
+          {
+            "expr": "sum(rate(hsk_security_alert_total{severity=\"medium\"}[5m]))",
+            "legendFormat": "Medium",
+            "refId": "C"
+          },
+          {
+            "expr": "sum(rate(hsk_security_alert_total{severity=\"low\"}[5m]))",
+            "legendFormat": "Low",
+            "refId": "D"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "min": 0,
+            "custom": {"lineWidth": 2, "fillOpacity": 30}
+          }
+        }
+      },
+      {
+        "id": 6,
+        "title": "Top Attack Sources",
+        "type": "table",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+        "targets": [
+          {
+            "expr": "topk(10, sum by (source_ip) (hsk_security_event_by_source))",
+            "format": "table",
+            "refId": "A"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "indexByName": {"source_ip": 0, "Value": 1},
+              "renameByName": {"source_ip": "Source IP", "Value": "Events"}
+            }
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Authentication Failures by Type",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+        "targets": [
+          {
+            "expr": "sum(rate(hsk_auth_failed_total{reason=\"invalid_credentials\"}[5m]))",
+            "legendFormat": "Invalid Credentials",
+            "refId": "A"
+          },
+          {
+            "expr": "sum(rate(hsk_auth_failed_total{reason=\"expired_token\"}[5m]))",
+            "legendFormat": "Expired Token",
+            "refId": "B"
+          },
+          {
+            "expr": "sum(rate(hsk_auth_failed_total{reason=\"invalid_signature\"}[5m]))",
+            "legendFormat": "Invalid Signature",
+            "refId": "C"
+          },
+          {
+            "expr": "sum(rate(hsk_auth_failed_total{reason=\"mfa_failed\"}[5m]))",
+            "legendFormat": "MFA Failed",
+            "refId": "D"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "min": 0,
+            "custom": {"lineWidth": 2, "fillOpacity": 20}
+          }
+        }
+      },
+      {
+        "id": 8,
+        "title": "DDoS Mitigation",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+        "targets": [
+          {
+            "expr": "sum(rate(hsk_ddos_blocked_requests_total[5m]))",
+            "legendFormat": "Blocked Requests",
+            "refId": "A"
+          },
+          {
+            "expr": "sum(rate(hsk_ddos_challenged_requests_total[5m]))",
+            "legendFormat": "Challenged Requests",
+            "refId": "B"
+          },
+          {
+            "expr": "hsk_ddos_current_threat_level",
+            "legendFormat": "Threat Level",
+            "refId": "C"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "min": 0,
+            "custom": {"lineWidth": 2}
+          }
+        }
+      },
+      {
+        "id": 9,
+        "title": "Certificate Expiry (days)",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+        "targets": [
+          {
+            "expr": "hsk_certificate_expiry_seconds / 86400",
+            "legendFormat": "{{certificate}}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "d",
+            "min": 0,
+            "thresholds": {
+              "steps": [
+                {"color": "red", "value": 0},
+                {"color": "yellow", "value": 7},
+                {"color": "green", "value": 30}
+              ]
+            },
+            "custom": {"lineWidth": 2}
+          }
+        }
+      },
+      {
+        "id": 10,
+        "title": "Key Rotation Events",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+        "targets": [
+          {
+            "expr": "sum(rate(hsk_key_rotation_total[5m])) by (key_type)",
+            "legendFormat": "{{key_type}}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "min": 0,
+            "custom": {"lineWidth": 2, "fillOpacity": 30}
+          }
+        }
+      },
+      {
+        "id": 11,
+        "title": "Vault Status",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 24},
+        "targets": [
+          {
+            "expr": "vault_seal_status",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "background",
+          "graphMode": "none"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": 0},
+                {"color": "red", "value": 1}
+              ]
+            },
+            "mappings": [
+              {"options": {"0": {"text": "UNSEALED"}}, "type": "value"},
+              {"options": {"1": {"text": "SEALED"}}, "type": "value"}
+            ]
+          }
+        }
+      },
+      {
+        "id": 12,
+        "title": "Audit Log Volume",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 28},
+        "targets": [
+          {
+            "expr": "sum(rate(hsk_audit_log_entries_total[5m]))",
+            "legendFormat": "Entries/sec",
+            "refId": "A"
+          },
+          {
+            "expr": "hsk_audit_log_size_bytes / 1024 / 1024",
+            "legendFormat": "Size (MB)",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "custom": {"lineWidth": 2, "fillOpacity": 20}
+          }
+        }
+      },
+      {
+        "id": 13,
+        "title": "WAF Blocked Requests",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 28},
+        "targets": [
+          {
+            "expr": "sum(rate(hsk_waf_blocked_total[5m])) by (rule)",
+            "legendFormat": "{{rule}}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "min": 0,
+            "custom": {"lineWidth": 2, "fillOpacity": 30}
+          }
+        }
+      }
+    ]
+  }
+}

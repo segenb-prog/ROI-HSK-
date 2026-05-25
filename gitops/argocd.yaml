@@ -1,0 +1,232 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hsk-platform
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/hskernel/hs-verifier.git
+    targetRevision: main
+    path: k8s-deployments
+    helm:
+      valueFiles:
+      - values-production.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hsk-verifier
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+    - CreateNamespace=true
+    - PrunePropagationPolicy=foreground
+    - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: hsk-environments
+  namespace: argocd
+spec:
+  generators:
+  - list:
+      elements:
+      - name: staging
+        namespace: hsk-staging
+        branch: develop
+        replicas: 1
+      - name: production
+        namespace: hsk-production
+        branch: main
+        replicas: 3
+  template:
+    metadata:
+      name: 'hsk-{{name}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/hskernel/hs-verifier.git
+        targetRevision: '{{branch}}'
+        path: k8s-deployments/overlays/{{name}}
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+        - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: hsk-project
+  namespace: argocd
+spec:
+  description: HSK Platform Project
+  
+  sourceRepos:
+  - https://github.com/hskernel/hs-verifier.git
+  - https://github.com/hskernel/hs-config.git
+  
+  destinations:
+  - namespace: hsk-*
+    server: https://kubernetes.default.svc
+  - namespace: monitoring
+    server: https://kubernetes.default.svc
+  - namespace: vault
+    server: https://kubernetes.default.svc
+  
+  clusterResourceWhitelist:
+  - group: ''
+    kind: Namespace
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRole
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRoleBinding
+  
+  namespaceResourceWhitelist:
+  - group: apps
+    kind: Deployment
+  - group: apps
+    kind: StatefulSet
+  - group: ''
+    kind: Service
+  - group: ''
+    kind: ConfigMap
+  - group: ''
+    kind: Secret
+  - group: networking.k8s.io
+    kind: Ingress
+  - group: networking.k8s.io
+    kind: NetworkPolicy
+  - group: batch
+    kind: CronJob
+  - group: autoscaling
+    kind: HorizontalPodAutoscaler
+  - group: policy
+    kind: PodDisruptionBudget
+  
+  roles:
+  - name: admin
+    description: Admin access
+    policies:
+    - p, proj:hsk-project:admin, applications, *, hsk-project/*, allow
+    groups:
+    - hsk-admin
+  
+  - name: developer
+    description: Developer access
+    policies:
+    - p, proj:hsk-project:developer, applications, get, hsk-project/*, allow
+    - p, proj:hsk-project:developer, applications, sync, hsk-project/*, allow
+    groups:
+    - hsk-developers
+  
+  - name: readonly
+    description: Read-only access
+    policies:
+    - p, proj:hsk-project:readonly, applications, get, hsk-project/*, allow
+    groups:
+    - hsk-viewers
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+data:
+  # Enable status badge
+  statusbadge.enabled: "true"
+  
+  # Enable anonymous access to UI
+  users.anonymous.enabled: "false"
+  
+  # OIDC configuration
+  url: https://argocd.hskernel.io
+  oidc.config: |
+    name: HSK SSO
+    issuer: https://auth.hskernel.io
+    clientID: $oidc.client_id
+    clientSecret: $oidc.client_secret
+    requestedScopes:
+      - openid
+      - profile
+      - email
+      - groups
+    requestedIDTokenClaims:
+      groups:
+        essential: true
+  
+  # Resource customizations
+  resource.customizations: |
+    apps/Deployment:
+      health.lua: |
+        hs = {}
+        if obj.status ~= nil then
+          if obj.status.conditions ~= nil then
+            for i, condition in ipairs(obj.status.conditions) do
+              if condition.type == "Available" and condition.status == "False" then
+                hs.status = "Degraded"
+                hs.message = condition.message
+                return hs
+              end
+              if condition.type == "Available" and condition.status == "True" then
+                hs.status = "Healthy"
+                hs.message = condition.message
+                return hs
+              end
+            end
+          end
+        end
+        hs.status = "Progressing"
+        hs.message = "Waiting for deployment"
+        return hs
+  
+  # Notifications
+  notifications.enabled: "true"
+  notifications.triggers.trigger.on-sync-succeeded: |
+    - description: Application syncing has succeeded
+      send:
+      - app-sync-succeeded
+      when: app.status.operationState.phase in ['Succeeded']
+  
+  notifications.templates.template.app-sync-succeeded: |
+    email:
+      subject: Application {{.app.metadata.name}} has synced successfully
+    message: |
+      {{if eq .serviceType "slack"}}:white_check_mark:{{end}} Application {{.app.metadata.name}} has synced successfully.
+      Sync operation details:
+      {{range .app.status.operationState.syncResult.resources}}
+        * {{.kind}} {{.name}}: {{.status}}
+      {{end}}
+    slack:
+      attachments: |
+        [{
+          "title": "{{.app.metadata.name}}",
+          "title_link": "{{.context.argocdUrl}}/applications/{{.app.metadata.name}}",
+          "color": "#18be52",
+          "fields": [
+            {
+              "title": "Sync Status",
+              "value": "{{.app.status.sync.status}}",
+              "short": true
+            },
+            {
+              "title": "Revision",
+              "value": "{{.app.status.sync.revision}}",
+              "short": true
+            }
+          ]
+        }]

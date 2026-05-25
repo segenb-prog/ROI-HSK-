@@ -1,0 +1,31 @@
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+metadata:
+  name: submit-response
+commands:
+  - script: |
+      #!/bin/bash
+      set -e
+      
+      VERIFIER_POD=$(kubectl get pod -n hsk-verifier-test -l app=hs-verifier -o jsonpath='{.items[0].metadata.name}')
+      
+      # Get saved request_id
+      REQUEST_ID=$(kubectl get configmap kuttl-test-state -n hsk-verifier-test -o jsonpath='{.data.request_id}')
+      
+      # Submit empty response (should result in violation)
+      RESPONSE=$(kubectl exec -n hsk-verifier-test $VERIFIER_POD -- \
+        curl -sf -X POST http://localhost:8080/response \
+        -H "Content-Type: application/json" \
+        -d "{
+          \"request_id\": \"$REQUEST_ID\",
+          \"system_id\": \"test-system-kuttl\",
+          \"provided_proofs\": [],
+          \"submitted_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+        }")
+      
+      # Verify violation detected
+      echo "$RESPONSE" | jq -e '.status == "violation"'
+      echo "$RESPONSE" | jq -e '.missing_proofs | length == 4'
+      echo "$RESPONSE" | jq -e '.certificate_id != null'
+      
+      echo "✓ Response submitted and violation detected"

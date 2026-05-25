@@ -1,0 +1,225 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-anomaly-detector
+  namespace: ml
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ml-anomaly-detector
+  template:
+    metadata:
+      labels:
+        app: ml-anomaly-detector
+    spec:
+      containers:
+      - name: detector
+        image: hskernel/ml-anomaly-detector:latest
+        ports:
+        - containerPort: 8080
+        - containerPort: 9090
+        env:
+        - name: MODEL_PATH
+          value: "/models"
+        - name: PROMETHEUS_URL
+          value: "http://prometheus:9090"
+        - name: CLICKHOUSE_URL
+          value: "clickhouse://clickhouse:9000"
+        - name: ALERT_THRESHOLD
+          value: "0.95"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "4000m"
+        volumeMounts:
+        - name: models
+          mountPath: /models
+      volumes:
+      - name: models
+        persistentVolumeClaim:
+          claimName: ml-models-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-anomaly-detector
+  namespace: ml
+spec:
+  selector:
+    app: ml-anomaly-detector
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ml-anomaly-config
+  namespace: ml
+data:
+  config.yaml: |
+    # ML Anomaly Detection Configuration
+    
+    models:
+      consent_pattern_anomaly:
+        description: "Detect unusual consent patterns"
+        algorithm: isolation_forest
+        features:
+          - consent_frequency
+          - time_of_day
+          - data_categories
+          - revocation_rate
+        training_window: "30 days"
+        prediction_window: "1 hour"
+        
+      access_pattern_anomaly:
+        description: "Detect unusual access patterns"
+        algorithm: lstm_autoencoder
+        features:
+          - request_rate
+          - endpoint_distribution
+          - geographic_distribution
+          - user_agent_diversity
+        training_window: "7 days"
+        prediction_window: "5 minutes"
+        
+      fraud_detection:
+        description: "Detect fraudulent consent activities"
+        algorithm: gradient_boosting
+        features:
+          - account_age
+          - consent_velocity
+          - device_fingerprint
+          - behavioral_biometrics
+        training_window: "90 days"
+        prediction_window: "real-time"
+    
+    # Violation prediction
+    violation_prediction:
+      enabled: true
+      
+      model:
+        algorithm: xgboost
+        features:
+          - system_uptime
+          - error_rate
+          - response_time
+          - resource_utilization
+          - recent_changes
+        
+        target: "violation_within_24h"
+        
+        thresholds:
+          low_risk: 0.3
+          medium_risk: 0.6
+          high_risk: 0.8
+      
+      actions:
+        low_risk:
+          - log_prediction
+        
+        medium_risk:
+          - log_prediction
+          - notify_team
+          - increase_monitoring
+        
+        high_risk:
+          - log_prediction
+          - page_oncall
+          - initiate_proactive_checks
+    
+    # Risk scoring
+    risk_scoring:
+      enabled: true
+      
+      factors:
+        - name: consent_risk
+          weight: 0.3
+          features:
+            - sensitive_data_involved
+            - broad_scope
+            - long_retention
+        
+        - name: access_risk
+          weight: 0.3
+          features:
+            - privileged_access
+            - unusual_time
+            - new_device
+        
+        - name: system_risk
+          weight: 0.2
+          features:
+            - known_vulnerabilities
+            - outdated_components
+            - configuration_drift
+        
+        - name: compliance_risk
+          weight: 0.2
+          features:
+            - gdpr_jurisdiction
+            - audit_findings
+            - policy_violations
+      
+      scoring:
+        scale: 0-100
+        
+        thresholds:
+          low: 0-30
+          medium: 31-60
+          high: 61-80
+          critical: 81-100
+    
+    # Natural language processing
+    nlp:
+      enabled: true
+      
+      use_cases:
+        consent_parsing:
+          description: "Extract structured data from consent text"
+          
+          capabilities:
+            - purpose_extraction
+            - data_category_identification
+            - retention_period_parsing
+            - legal_basis_classification
+          
+          output:
+            format: json
+            schema: consent_schema
+        
+        sentiment_analysis:
+          description: "Analyze user sentiment in support tickets"
+          
+          use: "prioritize support requests"
+        
+        anomaly_detection:
+          description: "Detect anomalies in consent language"
+          
+          example: "Unusually broad scope detected"
+    
+    # Training pipeline
+    training:
+      schedule: "weekly"
+      
+      data_sources:
+        - prometheus_metrics
+        - clickhouse_logs
+        - consent_database
+        - audit_logs
+      
+      validation:
+        holdout_ratio: 0.2
+        cross_validation_folds: 5
+      
+      deployment:
+        strategy: blue_green
+        rollback_threshold: 0.1  # 10% performance degradation

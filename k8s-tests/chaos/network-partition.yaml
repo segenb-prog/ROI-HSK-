@@ -1,0 +1,78 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: hsk-network-partition
+  namespace: hsk-verifier
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - hsk-verifier
+    labelSelectors:
+      app: hs-verifier
+  direction: both
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - hsk-verifier
+      labelSelectors:
+        app: transparency-log
+  duration: 5m
+  scheduler:
+    cron: '@every 24h'
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: hsk-dns-failure
+  namespace: hsk-verifier
+spec:
+  action: loss
+  mode: all
+  selector:
+    namespaces:
+      - hsk-verifier
+  loss:
+    loss: '100'
+  direction: to
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - kube-system
+      labelSelectors:
+        k8s-app: kube-dns
+  duration: 2m
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: hsk-verifier-cascade-failure
+  namespace: hsk-verifier
+spec:
+  action: pod-kill
+  mode: fixed-percent
+  value: '50'
+  selector:
+    namespaces:
+      - hsk-verifier
+    labelSelectors:
+      app: hs-verifier
+  gracePeriod: 0
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: TimeChaos
+metadata:
+  name: hsk-time-drift
+  namespace: hsk-verifier
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - hsk-verifier
+    labelSelectors:
+      app: hs-verifier
+  timeOffset: '+5m'
+  duration: 5m

@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webauthn-service
+  namespace: hsk-verifier
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: webauthn-service
+  template:
+    metadata:
+      labels:
+        app: webauthn-service
+    spec:
+      containers:
+      - name: webauthn
+        image: hskernel/webauthn-service:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: RELYING_PARTY_ID
+          value: "hskernel.io"
+        - name: RELYING_PARTY_NAME
+          value: "HSK Platform"
+        - name: RELYING_PARTY_ORIGIN
+          value: "https://app.hskernel.io"
+        - name: REDIS_URL
+          value: "redis://redis:6379"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: url
+        - name: ATTESTATION_PREFERENCE
+          value: "direct"
+        - name: AUTHENTICATOR_ATTACHMENT
+          value: "platform"
+        - name: USER_VERIFICATION
+          value: "required"
+        - name: RESIDENT_KEY
+          value: "required"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webauthn-service
+  namespace: hsk-verifier
+spec:
+  selector:
+    app: webauthn-service
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: webauthn-ingress
+  namespace: hsk-verifier
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - auth.hskernel.io
+    secretName: webauthn-tls
+  rules:
+  - host: auth.hskernel.io
+    http:
+      paths:
+      - path: /webauthn
+        pathType: Prefix
+        backend:
+          service:
+            name: webauthn-service
+            port:
+              number: 8080

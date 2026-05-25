@@ -1,0 +1,31 @@
+apiVersion: kuttl.dev/v1beta1
+kind: TestStep
+metadata:
+  name: list-certificates
+commands:
+  - script: |
+      #!/bin/bash
+      set -e
+      
+      VERIFIER_POD=$(kubectl get pod -n hsk-verifier-test -l app=hs-verifier -o jsonpath='{.items[0].metadata.name}')
+      
+      # List certificates
+      RESPONSE=$(kubectl exec -n hsk-verifier-test $VERIFIER_POD -- \
+        curl -sf "http://localhost:8080/certificates?system_id=test-system-kuttl&limit=10")
+      
+      # Verify response is array
+      echo "$RESPONSE" | jq -e 'type == "array"'
+      
+      # Should have at least one certificate from previous test
+      COUNT=$(echo "$RESPONSE" | jq 'length')
+      if [ "$COUNT" -lt 1 ]; then
+        echo "ERROR: Expected at least 1 certificate, got $COUNT"
+        exit 1
+      fi
+      
+      # Save first certificate ID
+      CERT_ID=$(echo "$RESPONSE" | jq -r '.[0].certificate_id')
+      kubectl patch configmap kuttl-test-state -n hsk-verifier-test --type=merge \
+        -p "{\"data\":{\"cert_id\":\"$CERT_ID\"}}"
+      
+      echo "✓ Listed $COUNT certificates"
